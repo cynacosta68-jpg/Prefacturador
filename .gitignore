@@ -1,0 +1,13 @@
+# Datos personales (Ley 25.326): nunca al repositorio
+seed/
+data/
+*.db
+*.db-*
+*.xlsx
+*.xls
+*.csv
+!assets/PlanillaPrestaciones_Galeno.xlsx
+.env
+__pycache__/
+*.pyc
+*.zip
