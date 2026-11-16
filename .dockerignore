@@ -1,0 +1,6 @@
+.git
+seed
+data
+*.db
+.env
+__pycache__
