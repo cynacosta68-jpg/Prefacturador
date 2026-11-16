@@ -522,9 +522,26 @@ VISTAS.evweb = async () => {
       <a class="btn primario" href="/api/evweb/exportar?${qs(par)}">Exportar Excel</a>
     </div>
     ${tabla(cols, d.filas, { vacio: d.rango.n ? "Ninguna fila coincide con los filtros." : "Todavía no hay datos extraídos de EVWEB para esta obra social. Usá la sección Bot EVWEB." })}
-    <p class="suave">${d.rango.n ? `En vista: ${miles(d.rango.n)} filas, prestaciones del ${fecha(d.rango.d)} al ${fecha(d.rango.h)}. ` : ""}El día 20 de cada mes se archivan los datos hasta el período ${esc(d.archivar_hasta)} y se quitan de esta vista; el administrador los descarga desde Inicio → Archivo.</p>
+    <p class="suave">${d.total ? "Hacé doble clic en una fila para ver todo su detalle. " : ""}${d.rango.n ? `En vista: ${miles(d.rango.n)} filas, prestaciones del ${fecha(d.rango.d)} al ${fecha(d.rango.h)}. ` : ""}El día 20 de cada mes se archivan los datos hasta el período ${esc(d.archivar_hasta)} y se quitan de esta vista; el administrador los descarga desde Inicio → Archivo.</p>
     ${d.extracciones.length ? `<p class="suave">Últimas extracciones: ${d.extracciones.slice(0, 6).map(e => `${esc(e.fecha)} (${esc(e.origen)}${e.desde ? ` ${esc(e.desde)}→${esc(e.hasta)}` : ""}: ${miles(e.filas)} filas, ${miles(e.nuevas)} nuevas)`).join(" · ")}</p>` : ""}`;
   const recargar = () => VISTAS.evweb().catch(fallo);
+  // Doble clic (o Enter con la fila enfocada) abre el detalle completo de la fila. Solo lectura.
+  const detalle = i => {
+    const f = d.filas[i]; if (!f) return;
+    const campos = Object.entries(f).filter(([, v]) => String(v ?? "").trim() !== "");
+    const vacios = Object.keys(f).length - campos.length;
+    modal(`<h3>Detalle de la fila${f[d.columnas[0]] ? " · " + esc(f[d.columnas[0]]) : ""}</h3>
+      <dl class="detalleFila">${campos.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+      ${vacios ? `<p class="suave">${vacios} campo(s) sin dato no se muestran.</p>` : ""}
+      <div class="pie"><button class="btn primario" data-cerrar>Cerrar</button></div>`);
+  };
+  $$("#vista tbody tr").forEach(tr => {
+    tr.tabIndex = 0;
+    tr.title = "Doble clic para ver el detalle";
+    tr.ondblclick = () => detalle(+tr.dataset.id);
+    // preventDefault: sin esto, el mismo Enter "aprieta" el botón Cerrar que recibe el foco
+    tr.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); detalle(+tr.dataset.id); } };
+  });
   enlazarPaginador(recargar);
   $("#fDesde").onchange = e => { F.fdesde = e.target.value; S.pagina = 0; recargar(); };
   $("#fHasta").onchange = e => { F.fhasta = e.target.value; S.pagina = 0; recargar(); };
