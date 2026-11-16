@@ -193,3 +193,10 @@ select{cursor:pointer}
 input.valorU{width:130px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;padding:5px 8px}
 .filtros .suave{max-width:46ch}
 #fProf{min-width:230px}
+
+/* elección de fuente al procesar */
+.opciones{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:14px 0 10px}
+.opcion{font:inherit;text-align:left;display:grid;gap:4px;padding:16px;border-radius:14px;border:1.5px solid var(--linea);background:#fff;color:var(--tinta);cursor:pointer;transition:border-color 150ms ease,box-shadow 150ms ease,transform 140ms var(--ease-out)}
+.opcion b{color:var(--navy);font-size:13px}.opcion span{font-size:19px;font-weight:800;font-variant-numeric:tabular-nums}.opcion small{color:var(--suave);font-size:11px}
+.opcion:active:not(:disabled){transform:scale(.985)}.opcion:disabled{opacity:.45;cursor:not-allowed}
+@media(hover:hover) and (pointer:fine){.opcion:hover:not(:disabled){border-color:var(--navy);box-shadow:var(--sombra2)}}

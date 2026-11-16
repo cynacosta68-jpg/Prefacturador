@@ -564,8 +564,11 @@ def prefacturar(os_key, periodo, contenido, nombre):
         v = grilla.valor(f["cod"], cat)
         # GALENO no informa importes: se valoriza con la grilla. SANCOR y AVALIAN
         # traen el importe validado por la obra social; la grilla queda de respaldo.
+        v_arch = round(f["importe"] / f["cant"], 2) if f["importe"] else None
+        if v and v_arch and abs(v - v_arch) > max(1, v_arch * 0.001):
+            obs.append("El valor del archivo difiere del de la grilla")
         if f["importe"]:
-            vu, origen = round(f["importe"] / f["cant"], 2), "archivo validado"
+            vu, origen = v_arch, "archivo validado"
         elif v:
             vu, origen = v, f"grilla {grilla.periodo}"
         else:
@@ -578,12 +581,13 @@ def prefacturar(os_key, periodo, contenido, nombre):
             prof["cuenta"] if prof else "", padron.mp(prof) or (f["prof_mp"] if not prof else ""),
             prof["nombre"] if prof else (e["profesional"] if e else f["prof_nombre"]),
             prof["cuit"] if prof else "", esp, cat, vu, round(vu * f["cant"], 2), origen, cruce,
-            " · ".join(obs), ahora))
+            " · ".join(obs), ahora, v_arch, v or None))
     with db.tx() as c:
         c.executemany(
             "INSERT INTO lineas(os,periodo,estado,nro_transaccion,fecha_prestacion,afiliado_numero,afiliado_nombre,"
             "cod_practica,descripcion,cantidad,cuenta,matricula,profesional,cuit,especialidad,categoria,valor_unit,"
-            "total,origen_valor,cruce,observacion,creado) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "total,origen_valor,cruce,observacion,creado,valor_archivo,valor_grilla) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             nuevas)
     res["insertadas"] = len(nuevas)
     return res
@@ -621,24 +625,40 @@ def editar_linea(lid, cambios, autocompletar=False):
                          especialidad=prof["especialidad"], categoria=prof["categoria"])
         elif nuevo["cuenta"] != lin["cuenta"] or nuevo["matricula"] != lin["matricula"]:
             raise ValueError("La cuenta / matrícula indicada no existe en el padrón de esta obra social.")
-        cambio_cod = nuevo["cod_practica"] != lin["cod_practica"] or nuevo["categoria"] != lin["categoria"]
-        if "valor_unit" not in cambios and (cambio_cod or not lin["valor_unit"]):
+        cambio_cod = nuevo["cod_practica"] != lin["cod_practica"] or nuevo["categoria"] != lin["categoria"] \
+            or nuevo["periodo"] != lin["periodo"]
+        if cambio_cod or lin.get("valor_grilla") is None:
             g = Grilla(lin["os"], nuevo["periodo"])
             v = g.valor(nuevo["cod_practica"], nuevo["categoria"])
-            if v:
+            nuevo["valor_grilla"] = v or None            # la columna Valor grilla sigue al código y la categoría
+            if v and "valor_unit" not in cambios and (cambio_cod or not lin["valor_unit"]):
                 nuevo["valor_unit"], nuevo["origen_valor"] = v, f"grilla {g.periodo}"
     if "valor_unit" in cambios and num(cambios["valor_unit"]) != lin["valor_unit"]:
         nuevo["origen_valor"] = "manual"
     nuevo["total"] = round(nuevo["valor_unit"] * (nuevo["cantidad"] or 1), 2)
     if nuevo["cuenta"] and nuevo["profesional"] and lin["cruce"] != "OK":
         nuevo["cruce"] = "MANUAL"
-    campos = CAMPOS_EDITABLES + ["total", "origen_valor", "cruce"]
+    campos = CAMPOS_EDITABLES + ["total", "origen_valor", "cruce", "valor_grilla"]
     with db.tx() as c:
         c.execute(f"UPDATE lineas SET {','.join(k + '=?' for k in campos)} WHERE id=?",
                   [nuevo[k] for k in campos] + [lid])
     final = db.q1("SELECT * FROM lineas WHERE id=?", (lid,))
     final["_cambios"] = {k: {"antes": lin[k], "despues": final[k]} for k in campos if lin[k] != final[k]}
     return final
+
+
+def aplicar_fuente(lin, fuente):
+    """Al procesar se elige qué valor queda: el del archivo validado o el de la grilla.
+    Devuelve la línea con el valor elegido; si esa fuente no tiene valor para la línea, o el valor
+    fue cargado a mano, la deja como está."""
+    v = lin.get("valor_archivo") if fuente == "archivo" else lin.get("valor_grilla") if fuente == "grilla" else None
+    if not v or v <= 0 or lin.get("origen_valor") == "manual":
+        return lin, False
+    nuevo = dict(lin)
+    nuevo["valor_unit"] = v
+    nuevo["total"] = round(v * (lin["cantidad"] or 1), 2)
+    nuevo["origen_valor"] = "archivo validado" if fuente == "archivo" else "grilla"
+    return nuevo, True
 
 
 def validar_para_procesar(lin):

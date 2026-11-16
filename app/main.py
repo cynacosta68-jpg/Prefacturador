@@ -704,7 +704,11 @@ def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce:
     filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro)
     cols = ["periodo", "nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
             "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
-            "valor_unit", "total", "origen_valor", "cruce", "observacion"]
+            "valor_unit", "total", "valor_archivo", "valor_grilla", "total_archivo", "total_grilla", "origen_valor",
+            "cruce", "observacion"]
+    for f in filas:
+        f["total_archivo"] = round(f["valor_archivo"] * (f["cantidad"] or 1), 2) if f["valor_archivo"] else None
+        f["total_grilla"] = round(f["valor_grilla"] * (f["cantidad"] or 1), 2) if f["valor_grilla"] else None
     df = pd.DataFrame([{k: f[k] for k in cols} for f in filas], columns=cols)
     nombre = {"prefact": "Prefacturacion", "facturacion": "Facturacion", "template": "Emitidas"}[estado]
     A(u, "lineas.exportar", _os(os), nombre.lower(), periodo or None, filas=len(filas))
@@ -728,6 +732,8 @@ async def lineas_accion(request: Request, u=Auth):
         raise ValueError("No hay filas seleccionadas.")
     if accion not in ("procesar", "rechazar", "eliminar", "editar"):
         raise HTTPException(400, "Acción inválida.")
+    fuente = d.get("fuente") if d.get("fuente") in ("archivo", "grilla") else ""
+    con_fuente = sin_fuente = 0
     hechas, omitidas, afectadas = 0, [], []
     with db.tx() as c:
         for bloque in (ids[i:i + 500] for i in range(0, len(ids), 500)):
@@ -736,11 +742,14 @@ async def lineas_accion(request: Request, u=Auth):
                 f"SELECT * FROM lineas WHERE os=? AND id IN ({marcas})", [os_key] + bloque).fetchall()]
             for f in filas:
                 if accion == "procesar" and f["estado"] == "prefact":
+                    f, aplicada = logic.aplicar_fuente(f, fuente)
                     faltan = logic.validar_para_procesar(f)
                     if faltan:
                         omitidas.append({"id": f["id"], "nro": f["nro_transaccion"], "faltan": faltan})
                         continue
-                    c.execute("UPDATE lineas SET estado='facturacion' WHERE id=?", (f["id"],))
+                    con_fuente, sin_fuente = con_fuente + aplicada, sin_fuente + (not aplicada)
+                    c.execute("UPDATE lineas SET estado='facturacion', valor_unit=?, total=?, origen_valor=? WHERE id=?",
+                              (f["valor_unit"], f["total"], f["origen_valor"], f["id"]))
                 elif accion == "rechazar" and f["estado"] == "facturacion":
                     c.execute("UPDATE lineas SET estado='prefact' WHERE id=?", (f["id"],))
                 elif accion == "eliminar" and f["estado"] in ("prefact", "facturacion"):
@@ -753,7 +762,8 @@ async def lineas_accion(request: Request, u=Auth):
                 if accion == "eliminar":   # se conserva la línea completa en la auditoría
                     afectadas.append({k: f[k] for k in f if k not in ("creado", "template_id") and f[k] not in (None, "")})
                 else:
-                    afectadas.append({"id": f["id"], "transaccion": f["nro_transaccion"], "cod": f["cod_practica"]})
+                    afectadas.append({"id": f["id"], "transaccion": f["nro_transaccion"], "cod": f["cod_practica"],
+                                      **({"total": f["total"], "origen_valor": f["origen_valor"]} if accion == "procesar" else {})})
     if accion == "editar":   # edición masiva: mismos cambios a todas las seleccionadas
         hechas = 0
         for i in ids:
@@ -766,8 +776,10 @@ async def lineas_accion(request: Request, u=Auth):
     for i in range(0, len(afectadas), 500):   # registros de hasta 500 líneas cada uno
         A(u, {"procesar": "lineas.procesar", "rechazar": "lineas.rechazar", "eliminar": "lineas.eliminar",
               "editar": "lineas.modificar_masivo"}[accion], os_key, "linea", None,
-          cantidad=len(afectadas), parte=i // 500 + 1, lineas=afectadas[i:i + 500])
-    return {"hechas": hechas, "omitidas": omitidas[:50], "n_omitidas": len(omitidas)}
+          cantidad=len(afectadas), parte=i // 500 + 1, **({"valor_tomado_de": fuente} if accion == "procesar" and fuente else {}),
+          lineas=afectadas[i:i + 500])
+    return {"hechas": hechas, "omitidas": omitidas[:50], "n_omitidas": len(omitidas),
+            "fuente": fuente, "con_fuente": con_fuente, "sin_fuente": sin_fuente}
 
 
 # ───────────────────────── templates ─────────────────────────

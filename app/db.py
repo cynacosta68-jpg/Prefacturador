@@ -119,6 +119,10 @@ def conn():
         if cols and "tipo_valor" not in cols:
             _conn.execute("DROP TABLE valores")
         _conn.executescript(SCHEMA)
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(lineas)").fetchall()]
+        for nueva in ("valor_archivo", "valor_grilla"):     # valor unitario según el archivo validado y según la grilla
+            if nueva not in cols:
+                _conn.execute(f"ALTER TABLE lineas ADD COLUMN {nueva} REAL")
         cols = [r[1] for r in _conn.execute("PRAGMA table_info(evweb_filas)").fetchall()]
         if "fecha" not in cols:      # fecha de la prestación (AAAA-MM-DD) para filtrar y archivar
             _conn.execute("ALTER TABLE evweb_filas ADD COLUMN fecha TEXT")

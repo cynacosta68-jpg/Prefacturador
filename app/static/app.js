@@ -541,7 +541,14 @@ const COLS_LINEA = [
   { k: "cuenta", t: "Cuenta" }, { k: "matricula", t: "Matrícula" }, { k: "profesional", t: "Profesional" },
   { k: "especialidad", t: "Especialidad" }, { k: "categoria", t: "Cat." },
   { k: "valor_unit", t: "Valor unit.", num: true, f: f => f.valor_unit ? pesos(f.valor_unit) : `<span class="et mal">sin valor</span>` },
-  { k: "total", t: "Total", num: true, f: f => pesos(f.total) }, { k: "origen_valor", t: "Origen valor" }, { k: "observacion", t: "Observación" },
+  { k: "total", t: "Total", num: true, f: f => pesos(f.total) },
+  { k: "valor_archivo", t: "Total archivo", num: true, f: f => f.valor_archivo ? pesos(f.valor_archivo * (f.cantidad || 1)) : `<span class="suave">—</span>` },
+  { k: "valor_grilla", t: "Valor grilla", num: true, f: f => {
+    if (!f.valor_grilla) return `<span class="suave">sin grilla</span>`;
+    const tg = f.valor_grilla * (f.cantidad || 1), dif = Math.abs(tg - (f.total || 0)) > Math.max(1, tg * 0.001);
+    return dif ? `<span class="et avi" title="Difiere del total de la línea">${pesos(tg)}</span>` : pesos(tg);
+  } },
+  { k: "origen_valor", t: "Origen valor" }, { k: "observacion", t: "Observación" },
 ];
 
 function editarLinea(f, recargar) {
@@ -585,8 +592,34 @@ function informe(r, verbo) {
     <div class="pie"><button class="btn primario" data-cerrar>Entendido</button></div>`);
 }
 
-async function accion(nombre, ids, recargar, verbo) {
-  try { const r = await api("/api/lineas/accion", { json: { os: S.os, accion: nombre, ids } }); ids.forEach(i => S.sel.delete(i)); informe(r, verbo); contadores(); recargar(); } catch (err) { fallo(err); }
+async function accion(nombre, ids, recargar, verbo, extra = {}) {
+  try {
+    const r = await api("/api/lineas/accion", { json: { os: S.os, accion: nombre, ids, ...extra } });
+    ids.forEach(i => S.sel.delete(i));
+    if (r.fuente && !r.n_omitidas) toast(`${miles(r.hechas)} línea(s) enviada(s) a Facturación · ${miles(r.con_fuente)} con el valor ${r.fuente === "grilla" ? "de la grilla" : "del archivo"}${r.sin_fuente ? ` · ${miles(r.sin_fuente)} conservaron su valor` : ""}`);
+    else informe(r, verbo);
+    contadores(); recargar();
+  } catch (err) { fallo(err); }
+}
+
+/* Al procesar se pregunta qué valor total queda: el del archivo validado o el de la grilla. */
+function procesarConFuente(ids, recargar) {
+  const sel = S.filas.filter(f => ids.includes(f.id));
+  const suma = k => sel.reduce((t, f) => t + (f[k] ? f[k] * (f.cantidad || 1) : 0), 0);
+  const cuenta = k => sel.filter(f => f[k] > 0).length;
+  const fuera = ids.length - sel.length;
+  modal(`<h3>Procesar ${miles(ids.length)} línea(s): ¿qué valor total tomar?</h3>
+    <div class="opciones">
+      <button class="opcion" data-fuente="archivo" ${cuenta("valor_archivo") || fuera ? "" : "disabled"}>
+        <b>Valor total del archivo</b><span>${pesos(suma("valor_archivo"))}</span>
+        <small>${miles(cuenta("valor_archivo"))} de ${miles(sel.length)} línea(s) en pantalla traen valor en el archivo validado</small></button>
+      <button class="opcion" data-fuente="grilla" ${cuenta("valor_grilla") || fuera ? "" : "disabled"}>
+        <b>Valor total de la grilla</b><span>${pesos(suma("valor_grilla"))}</span>
+        <small>${miles(cuenta("valor_grilla"))} de ${miles(sel.length)} línea(s) en pantalla tienen valor en la grilla</small></button>
+    </div>
+    <p class="suave">Las líneas que no tengan valor en la fuente elegida, y las que tienen un valor cargado a mano, conservan el valor que muestran ahora.${fuera ? ` Hay ${miles(fuera)} línea(s) seleccionada(s) en otras páginas: los totales de arriba son solo de las que están en pantalla.` : ""}</p>
+    <div class="pie"><button class="btn" data-cerrar>Cancelar</button></div>`);
+  $$(".opcion").forEach(b => b.onclick = () => { cerrarModal(); accion("procesar", ids, recargar, "enviada(s) a Facturación", { fuente: b.dataset.fuente }); });
 }
 
 async function vistaLineas(estado, cfg) {
@@ -617,7 +650,7 @@ async function vistaLineas(estado, cfg) {
   const fila = id => d.filas.find(f => f.id === +id);
   $$("[data-editar]").forEach(b => b.onclick = () => editarLinea(fila(b.dataset.editar), recargar));
   $$("[data-eliminar]").forEach(b => b.onclick = async () => { if (await confirmar("¿Eliminar esta línea?", "Eliminar", "peligro")) accion("eliminar", [+b.dataset.eliminar], recargar, "eliminada(s)"); });
-  $$("[data-procesar]").forEach(b => b.onclick = () => accion("procesar", [+b.dataset.procesar], recargar, "enviada(s) a Facturación"));
+  $$("[data-procesar]").forEach(b => b.onclick = () => procesarConFuente([+b.dataset.procesar], recargar));
   $$("[data-rechazar]").forEach(b => b.onclick = () => accion("rechazar", [+b.dataset.rechazar], recargar, "devuelta(s) a Pre-facturación"));
   cfg.enlazar(recargar, d);
 }
@@ -654,7 +687,7 @@ VISTAS.prefact = async () => {
       <button class="btn mini peligro" data-eliminar="${f.id}">Eliminar</button>
       <button class="btn mini ok" data-procesar="${f.id}">Procesar</button>`,
     enlazar: recargar => {
-      $("#mProc").onclick = () => accion("procesar", [...S.sel], recargar, "enviada(s) a Facturación");
+      $("#mProc").onclick = () => procesarConFuente([...S.sel], recargar);
       $("#mEdit").onclick = () => edicionMasiva(recargar);
       $("#mElim").onclick = async () => { if (await confirmar(`¿Eliminar ${S.sel.size} línea(s)?`, "Eliminar", "peligro")) accion("eliminar", [...S.sel], recargar, "eliminada(s)"); };
     },

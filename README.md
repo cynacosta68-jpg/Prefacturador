@@ -72,6 +72,9 @@ al subir y, ante un valor raro, las columnas Solapa y Fila del Excel exportado i
 
 - En EVWEB la columna de transacción y la del profesional se detectan por nombre (`nroAutorizacion`, `Prescriptor`/`Efector`…), igual que en el bot de Galeno. El profesional se busca en el padrón por cuenta o por nombre (exacto → contenido → por palabras).
 - Estados de cruce: `OK`, `SIN EVWEB` (la transacción no está en lo extraído), `SIN PADRON` (el profesional de EVWEB no está en el padrón), `MANUAL` (corregida a mano).
+- Cada línea guarda el valor del archivo validado y el de la grilla (columnas «Total archivo» y «Valor grilla»; la
+  segunda se resalta cuando difiere del total). Al **Procesar** se pregunta cuál tomar; las líneas sin valor en la
+  fuente elegida, o con valor cargado a mano, conservan el que tienen.
 - Una línea solo se puede **Procesar** si tiene cuenta, profesional, código y valor.
 - Volver a subir el mismo archivo no duplica: se omiten las transacciones + código ya cargados.
 - Al modificar cuenta o matrícula se completa el profesional desde el padrón; al cambiar código o categoría se toma el valor de la grilla (se puede desactivar en el diálogo).
