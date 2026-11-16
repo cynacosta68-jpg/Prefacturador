@@ -21,9 +21,9 @@ seguridad y Usuarios.
 | Sección | Qué hace |
 |---|---|
 | **Padrón** | Base de profesionales por obra social. Importar reemplaza el padrón de esa obra social. Alta, edición, baja y exportación. |
-| **Valores** | Se sube el Excel de la grilla (todas las solapas) indicando el período. Se unifica en una tabla de prestaciones y, al lado, los valores por unidad editables. Ver «Grillas de valores». |
+| **Valores** | Se sube el Excel de la grilla (todas las solapas) indicando el período. Dos sub-secciones: **Valores** (prestaciones unificadas) y **Unidades** (valores por unidad editables). Ver «Grillas de valores». |
 | **Bot EVWEB** | Extrae de EVWEB con obra social = la elegida, estado «APROBADO EN OBRA SOCIAL», facturadas «NO» y el rango de fechas de carga que elige el usuario, fragmentado en tramos de 9 días. Usuario y contraseña de EVWEB se piden en cada extracción y no se guardan. También admite importar un Excel de EVWEB bajado a mano. |
-| **Datos extraídos EVWEB** | Todo lo extraído, solo consulta, exportable a Excel. No se puede modificar. Filas idénticas no se duplican. |
+| **Datos extraídos EVWEB** | Todo lo extraído, solo consulta, exportable a Excel. Filtros: fecha de prestación desde / hasta, cuenta - profesional, N° de transacción y texto libre. Filas idénticas no se duplican. |
 | **Pre-facturación** | Se sube el archivo de prestaciones validadas y el período; «Comenzar a prefacturar» cruza cada fila con EVWEB por número de transacción, completa cuenta / matrícula / CUIT / especialidad / categoría desde el padrón y valoriza. Cada línea se puede modificar, eliminar o **Procesar** (individual o masivo). |
 | **Facturación** | Líneas procesadas. Se pueden modificar o **Rechazar** (vuelven a Pre-facturación). Vista de a 1500 filas o todas, selección y **Generar template**. |
 | **Templates** | `Template_facturacion_<período>_<NN>` (ej. `Template_facturacion_112026_01`). Descargar o **Deshacer** (las líneas vuelven a Facturación). |
@@ -81,7 +81,8 @@ al subir y, ante un valor raro, las columnas Solapa y Fila del Excel exportado i
 anterior a la fecha de generación, `cantidad` la de la línea y el resto fijo en 0 / vacío.
 
 **Planilla GALENO** — tipo de facturación 121, N° de asociado con 10 dígitos sin barra, monto = honorario + ayudantes +
-gasto + aparatología, tipo de matrícula 1 (provincial), N° de matrícula = MP del padrón, especialidad = la del profesional en el padrón, honorarios/gastos 0-1-2.
+gasto + aparatología **menos el coseguro** de esa transacción (columna `Copago` del archivo validado, cruzado por
+N° de transacción y práctica; se guarda al pre-facturar o se sube en Presentaciones), tipo de matrícula 1 (provincial), N° de matrícula = MP del padrón, especialidad = la del profesional en el padrón, honorarios/gastos 0-1-2.
 La base de GALENO no trae MP: se toma la del mismo CUIT en los padrones de SANCOR / AVALIAN, o se carga en Padrón.
 
 ## Auditoría
@@ -105,6 +106,19 @@ administradores).
   con acceso restringido: contiene los datos personales y los usuarios (las contraseñas, solo como hash).
 - Restaurar: detener el servicio en Easypanel, descomprimir la copia y dejarla como `/data/facturacion.db`
   (borrar `facturacion.db-wal` y `facturacion.db-shm` si existen), y volver a iniciar.
+
+## Archivo mensual
+
+El período de un mes se presenta hasta el día 15 del mes siguiente; por eso, el **día 20** de cada mes (`ARCHIVE_DAY`)
+la aplicación archiva sola el período anterior y todo lo más viejo: octubre se archiva el 20 de noviembre.
+
+- Se archivan los **datos extraídos de EVWEB** (por fecha de prestación) y las **líneas ya emitidas en templates**.
+  Lo que sigue pendiente en Pre-facturación o Facturación no se toca; los templates siguen descargables.
+- Cada archivo es un Excel (`Archivo_<OS>_hasta_<período>_<fecha>.xlsx`) en `/data/archivo`, con una hoja por tipo de
+  dato. Antes de quitar nada se hace una copia de seguridad completa y se verifica que el Excel quedó escrito.
+- *Inicio → Archivo* (solo administradores): lista y descarga de archivos, y «Archivar ahora» para hacerlo a mano.
+- Los archivos quedan en el mismo servidor: descargarlos y guardarlos fuera. Para volver a consultar datos
+  archivados se abre el Excel; no se reincorporan a la aplicación.
 
 ## Seguridad de la información (Ley 25.326)
 

@@ -89,6 +89,12 @@ BEGIN SELECT RAISE(ABORT, 'La auditoria no se puede modificar'); END;
 CREATE TRIGGER IF NOT EXISTS aud_no_delete BEFORE DELETE ON auditoria
 BEGIN SELECT RAISE(ABORT, 'La auditoria no se puede borrar'); END;
 
+-- Coseguros (copagos) informados en el archivo validado, por transacción y práctica
+CREATE TABLE IF NOT EXISTS coseguros (
+    os TEXT NOT NULL, nro TEXT NOT NULL, cod TEXT NOT NULL, copago REAL NOT NULL DEFAULT 0, periodo TEXT,
+    PRIMARY KEY (os, nro, cod)
+);
+
 CREATE TABLE IF NOT EXISTS templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     os TEXT NOT NULL, periodo TEXT NOT NULL, nn INTEGER,
@@ -113,6 +119,10 @@ def conn():
         if cols and "tipo_valor" not in cols:
             _conn.execute("DROP TABLE valores")
         _conn.executescript(SCHEMA)
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(evweb_filas)").fetchall()]
+        if "fecha" not in cols:      # fecha de la prestación (AAAA-MM-DD) para filtrar y archivar
+            _conn.execute("ALTER TABLE evweb_filas ADD COLUMN fecha TEXT")
+        _conn.execute("CREATE INDEX IF NOT EXISTS ix_ev_fecha ON evweb_filas(os, fecha)")
     return _conn
 
 

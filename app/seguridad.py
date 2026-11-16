@@ -198,6 +198,14 @@ def _ciclo_backup():
                 auditar("sistema", "", "backup.error", detalle={"error": str(e)})
             except Exception:
                 pass
+        try:
+            from . import archivo
+            archivo.automatico()
+        except Exception as e:
+            try:
+                auditar("sistema", "", "archivo.error", detalle={"error": str(e)})
+            except Exception:
+                pass
         time.sleep(1800)
 
 

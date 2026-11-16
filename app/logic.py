@@ -310,6 +310,23 @@ def detectar_col_profesional(df):
     return df.columns[1] if len(df.columns) > 1 else df.columns[0]
 
 
+def fecha_iso(val):
+    """dd/mm/aaaa (o lo que venga) → AAAA-MM-DD; '' si no es una fecha."""
+    t = fecha_ddmmaaaa(val)
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})", t)
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else ""
+
+
+def detectar_col_fecha(columnas):
+    """Columna con la fecha de la prestación en el Excel de EVWEB."""
+    cand = [c for c in columnas if "fecha" in norm(c)]
+    for clave in ("prest", "realiz", "atenc", "practica", "carga"):
+        for c in cand:
+            if clave in norm(c):
+                return c
+    return cand[0] if cand else None
+
+
 def guardar_evweb(os_key, dfs, origen, desde="", hasta=""):
     """Guarda filas extraídas de EVWEB (solo consulta). Deduplica filas idénticas."""
     dfs = [d for d in dfs if d is not None and len(d)]
@@ -320,6 +337,8 @@ def guardar_evweb(os_key, dfs, origen, desde="", hasta=""):
     c_aut = detectar_col_autorizacion(df)
     c_prof = detectar_col_profesional(df)
     c_cta = next((c for c in df.columns if any(k in norm(c) for k in ("cuenta", "cta"))), None)
+    c_fec = detectar_col_fecha(df.columns)
+    padron = Padron(os_key)
     nuevas = 0
     with db.tx() as c:
         cur = c.execute(
@@ -330,21 +349,74 @@ def guardar_evweb(os_key, dfs, origen, desde="", hasta=""):
             data = {k: (fecha_ddmmaaaa(v) if isinstance(v, (datetime, date)) else txt(v)) for k, v in r.items()}
             js = json.dumps(data, ensure_ascii=False)
             h = hashlib.sha1(js.encode()).hexdigest()
+            prof = txt(r[c_prof])
+            cuenta = txt(r[c_cta]) if c_cta else ""
+            if not cuenta:               # la cuenta sale del padrón, por el nombre del profesional
+                fila = padron.buscar_nombre(prof)
+                cuenta = fila["cuenta"] if fila else ""
             cur = c.execute(
-                "INSERT OR IGNORE INTO evweb_filas(extraccion_id,os,nro,profesional,cuenta,data,hash) VALUES (?,?,?,?,?,?,?)",
-                (eid, os_key, limpiar_id(r[c_aut]), txt(r[c_prof]), txt(r[c_cta]) if c_cta else "", js, h))
+                "INSERT OR IGNORE INTO evweb_filas(extraccion_id,os,nro,profesional,cuenta,data,hash,fecha) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (eid, os_key, limpiar_id(r[c_aut]), prof, cuenta, js, h, fecha_iso(r[c_fec]) if c_fec else ""))
             nuevas += cur.rowcount
         c.execute("UPDATE evweb_extracciones SET nuevas=? WHERE id=?", (nuevas, eid))
-    return {"filas": len(df), "nuevas": nuevas, "col_autorizacion": c_aut, "col_profesional": c_prof}
+    return {"filas": len(df), "nuevas": nuevas, "col_autorizacion": c_aut, "col_profesional": c_prof,
+            "col_fecha": c_fec}
 
 
-def evweb_df(os_key, busqueda=""):
-    filas = db.q("SELECT data FROM evweb_filas WHERE os=? ORDER BY id", (os_key,))
-    regs = [json.loads(f["data"]) for f in filas]
+def completar_fechas_evweb():
+    """Filas guardadas antes de tener la columna fecha: se completa desde los datos."""
+    pend = db.q("SELECT id, data FROM evweb_filas WHERE fecha IS NULL LIMIT 200000")
+    if not pend:
+        return
+    col = None
+    with db.tx() as c:
+        for f in pend:
+            data = json.loads(f["data"])
+            col = col if col in data else detectar_col_fecha(data.keys())
+            c.execute("UPDATE evweb_filas SET fecha=? WHERE id=?", (fecha_iso(data.get(col)) if col else "", f["id"]))
+
+
+def filtro_profesional(prof, campo_cuenta="cuenta", campo_nombre="profesional"):
+    """'C123 - APELLIDO, Nombre' → condición SQL y parámetros."""
+    prof = (prof or "").strip()
+    if not prof:
+        return "", []
+    if " - " in prof:
+        cta, nom = [x.strip() for x in prof.split(" - ", 1)]
+        if cta and cta != "(sin cuenta)":
+            return f" AND {campo_cuenta}=?", [cta]
+        return f" AND {campo_nombre}=?", [nom]
+    return f" AND ({campo_cuenta} LIKE ? OR {campo_nombre} LIKE ?)", [f"%{prof}%", f"%{prof}%"]
+
+
+def opciones_profesional(tabla, os_key, extra="", params=()):
+    filas = db.q(f"SELECT DISTINCT cuenta, profesional FROM {tabla} WHERE os=? {extra} AND profesional<>'' "
+                 f"ORDER BY profesional LIMIT 3000", (os_key, *params))
+    return [f"{f['cuenta'] or '(sin cuenta)'} - {f['profesional']}" for f in filas]
+
+
+def evweb_filas(os_key, busqueda="", desde="", hasta="", prof="", nro=""):
+    sql, par = "SELECT data FROM evweb_filas WHERE os=?", [os_key]
+    if desde:
+        sql += " AND fecha>=?"
+        par.append(desde)
+    if hasta:
+        sql += " AND fecha<=? AND fecha<>''"
+        par.append(hasta)
+    if nro.strip():
+        sql += " AND nro LIKE ?"
+        par.append(f"%{limpiar_id(nro)}%")
+    cond, p2 = filtro_profesional(prof)
+    regs = [json.loads(f["data"]) for f in db.q(sql + cond + " ORDER BY fecha DESC, id DESC", par + p2)]
     if busqueda:
         b = norm(busqueda)
         regs = [r for r in regs if b in norm(" ".join(r.values()))]
-    return pd.DataFrame(regs)
+    return regs
+
+
+def evweb_df(os_key, busqueda="", desde="", hasta="", prof="", nro=""):
+    return pd.DataFrame(evweb_filas(os_key, busqueda, desde, hasta, prof, nro))
 
 
 # ───────────────────────── archivo validado → líneas ─────────────────────────
@@ -370,6 +442,7 @@ def _parse_galeno(df):
             desc=txt(r.get(col(df, "Descripción Práctica"))),
             cant=num(r.get(col(df, "Cant. Tratamientos")), 1) or 1,
             importe=None, prof_nombre="", prof_mp="",
+            copago=num(r.get(col(df, "Copago", "Coseguro"))),
         ))
     return out, anuladas
 
@@ -427,6 +500,17 @@ PARSERS = {
 }
 
 
+def guardar_coseguros(os_key, filas, periodo=""):
+    """Guarda el copago de cada transacción + práctica del archivo validado (se usa en Presentaciones)."""
+    datos = [(os_key, f["claves"][0], f["cod"], f["copago"], periodo) for f in filas if "copago" in f]
+    if not datos:
+        return 0
+    with db.tx() as c:
+        c.executemany("INSERT INTO coseguros(os,nro,cod,copago,periodo) VALUES (?,?,?,?,?) "
+                      "ON CONFLICT(os,nro,cod) DO UPDATE SET copago=excluded.copago, periodo=excluded.periodo", datos)
+    return len(datos)
+
+
 def prefacturar(os_key, periodo, contenido, nombre):
     """Cruza el archivo validado con lo extraído de EVWEB por número de
     transacción, completa profesional desde el padrón y valoriza."""
@@ -435,6 +519,7 @@ def prefacturar(os_key, periodo, contenido, nombre):
     filas, anuladas = parser(leer_tabla(contenido, nombre, claves=claves))
     if not filas:
         raise ValueError("El archivo no tiene filas para procesar.")
+    guardar_coseguros(os_key, filas, periodo)
 
     ev = {}
     for f in db.q("SELECT nro, profesional, cuenta FROM evweb_filas WHERE os=? AND nro<>''", (os_key,)):
@@ -688,15 +773,32 @@ def convertir_sancor(contenido, nombre, factura=""):
     return df_a_xlsx(df.fillna(""), "Prestaciones exportadas"), {"filas": len(df), "sin_mp": sin}
 
 
-def convertir_galeno(contenido, nombre, factura=""):
-    """PrestacionesExport → PlanillaPrestaciones_Galeno (modelo del portal)."""
+def convertir_galeno(contenido, nombre, factura="", validado=None):
+    """PrestacionesExport → PlanillaPrestaciones_Galeno (modelo del portal).
+
+    El importe (columna J) es el total del export menos el coseguro de esa transacción,
+    tomado del archivo validado de Galeno (cruce por número de transacción)."""
     df = _leer_export(contenido, nombre, factura)
     padron = Padron("GALENO")
+    if validado:      # archivo validado subido en el momento: actualiza los coseguros guardados
+        filas_val, _ = _parse_galeno(leer_tabla(validado[0], validado[1], claves=PARSERS["GALENO"][1]))
+        guardar_coseguros("GALENO", filas_val)
+    k = lambda c: re.sub(r"[.\s-]", "", str(c or "")).upper().lstrip("0")  # noqa: E731
+    cos = {}
+    for f in db.q("SELECT nro, cod, copago FROM coseguros WHERE os='GALENO'"):
+        cos.setdefault(f["nro"], {})[k(f["cod"])] = f["copago"]
+    c_aut = col(df, "numaut", parcial=False)
+    cods_export = {}  # transacción → códigos que trae el export
+    if c_aut:
+        for nro, cod in zip(df[c_aut].map(limpiar_id), df["cod_practica"].map(k)):
+            cods_export.setdefault(nro, set()).add(cod)
+    usado = {}        # transacción → códigos ya descontados
     wb = load_workbook(os.path.join(ASSETS, "PlanillaPrestaciones_Galeno.xlsx"))
     ws = wb.active
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row)
-    sin, sin_esp = set(), set()
+    sin, sin_esp, sin_cruce, excedidos = set(), set(), set(), []
+    total_cos, filas_cos = 0.0, 0
     g = lambda r, c: txt(r.get(c))  # noqa: E731
     for _, r in df.iterrows():
         cuenta = g(r, "Matricula").upper()
@@ -709,6 +811,26 @@ def convertir_galeno(contenido, nombre, factura=""):
         hon = num(r.get("Honorario")) + num(r.get("1er_ayudante")) + num(r.get("2do_ayudante"))
         gas = num(r.get("gasto")) + num(r.get("aparatologia"))
         hg = 2 if (hon and gas) else 1 if gas else 0
+        # coseguro: el de la misma práctica; si ningún código de la transacción coincide con el
+        # archivo validado, el coseguro completo de la transacción va en su primera fila
+        nro, cod = limpiar_id(g(r, "numaut")), k(g(r, "cod_practica"))
+        copago = 0.0
+        if nro and nro in cos:
+            pend = {c: v for c, v in cos[nro].items() if c not in usado.setdefault(nro, set())}
+            if cod in pend:
+                copago = pend[cod]
+                usado[nro].add(cod)
+            elif pend and not (cods_export.get(nro, set()) & set(cos[nro])):
+                copago = sum(pend.values())
+                usado[nro].update(pend)
+        elif nro:
+            sin_cruce.add(nro)
+        importe = round(hon + gas - copago, 2)
+        if importe < 0:
+            excedidos.append(nro)
+            importe = 0.0
+        if copago:
+            total_cos, filas_cos = total_cos + copago, filas_cos + 1
         f = datetime.strptime(fecha_ddmmaaaa(r.get("fecha_prestacion")), "%d/%m/%Y") \
             if re.fullmatch(r"\d{2}/\d{2}/\d{4}", fecha_ddmmaaaa(r.get("fecha_prestacion"))) else g(r, "fecha_prestacion")
         ent = lambda v: int(v) if str(v).isdigit() and not str(v).startswith("0") else v  # noqa: E731
@@ -719,7 +841,7 @@ def convertir_galeno(contenido, nombre, factura=""):
             ent(g(r, "cod_practica")),
             " ".join(g(r, "Descripcion_Practica").split()),
             int(num(r.get("cantidad"), 1) or 1),
-            round(hon + gas, 2),
+            importe,
             ent(g(r, "numaut")),
             1, ent(mp) if mp else None, None, hg, None,
             (p["especialidad"].strip() if p and p["especialidad"] else None), None, None,
@@ -734,4 +856,7 @@ def convertir_galeno(contenido, nombre, factura=""):
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue(), {"filas": len(df), "sin_mp": sorted(s for s in sin if s),
-                            "sin_especialidad": sorted(s for s in sin_esp if s)}
+                            "sin_especialidad": sorted(s for s in sin_esp if s),
+                            "coseguro_total": round(total_cos, 2), "coseguro_filas": filas_cos,
+                            "sin_cruce": len(sin_cruce), "sin_cruce_ej": sorted(sin_cruce)[:8],
+                            "coseguro_excedido": excedidos[:20]}

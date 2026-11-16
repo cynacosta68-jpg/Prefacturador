@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import db, logic, seguridad
+from . import archivo, db, logic, seguridad
 from .seguridad import auditar
 from .evweb_bot import ejecutar_extractor, generar_rangos_9_dias
 
@@ -39,6 +39,7 @@ _intentos = {}
 def _inicio():
     db.conn()
     seguridad.sembrar_admin()
+    logic.completar_fechas_evweb()
     seguridad.iniciar_backups()
 
 
@@ -597,20 +598,57 @@ async def evweb_importar(os: str = Form(...), archivo: UploadFile = File(...), u
 
 
 @app.get("/api/evweb")
-def evweb(os: str, q: str = "", limite: int = 1500, desde: int = 0, u=Auth):
+def evweb(os: str, q: str = "", fdesde: str = "", fhasta: str = "", prof: str = "", nro: str = "",
+          limite: int = 1500, desde: int = 0, u=Auth):
     os_key = _os(os)
-    df = logic.evweb_df(os_key, q)
+    regs = logic.evweb_filas(os_key, q, fdesde, fhasta, prof, nro)
+    cols = list(dict.fromkeys(k for r in regs[:300] for k in r))
     ext = db.q("SELECT * FROM evweb_extracciones WHERE os=? ORDER BY id DESC LIMIT 30", (os_key,))
-    tramo = df.iloc[desde:desde + limite] if limite > 0 else df
-    return {"total": len(df), "columnas": list(df.columns), "filas": tramo.fillna("").to_dict("records"),
-            "extracciones": ext}
+    rango = db.q1("SELECT MIN(NULLIF(fecha,'')) d, MAX(fecha) h, COUNT(*) n FROM evweb_filas WHERE os=?", (os_key,))
+    return {"total": len(regs), "columnas": cols, "filas": regs[desde:desde + limite] if limite > 0 else regs,
+            "extracciones": ext, "profesionales": logic.opciones_profesional("evweb_filas", os_key),
+            "rango": rango, "archivar_hasta": archivo.periodo_a_archivar()}
 
 
 @app.get("/api/evweb/exportar")
-def evweb_exportar(os: str, q: str = "", u=Auth):
-    df = logic.evweb_df(_os(os), q)
-    A(u, "evweb.exportar", _os(os), "evweb", None, filas=len(df), filtro=q)
+def evweb_exportar(os: str, q: str = "", fdesde: str = "", fhasta: str = "", prof: str = "", nro: str = "", u=Auth):
+    df = logic.evweb_df(_os(os), q, fdesde, fhasta, prof, nro)
+    A(u, "evweb.exportar", _os(os), "evweb", None, filas=len(df),
+      filtros={k: v for k, v in (("texto", q), ("desde", fdesde), ("hasta", fhasta), ("profesional", prof), ("transaccion", nro)) if v})
     return _descarga(logic.df_a_xlsx(df, "EVWEB"), f"Datos_extraidos_evweb_{_os(os)}_{date.today():%Y%m%d}.xlsx")
+
+
+# ───────────────────────── archivo mensual (solo administrador) ─────────────────────────
+
+@app.get("/api/archivo")
+def archivo_lista(u=Admin):
+    per = archivo.periodo_a_archivar()
+    return {"filas": archivo.listar(), "dia": archivo.DIA_ARCHIVO, "periodo": per,
+            "pendiente": {k: archivo.pendiente(k, per) for k in logic.OBRAS}}
+
+
+@app.post("/api/archivo")
+async def archivo_ahora(request: Request, u=Admin):
+    d = await request.json()
+    os_key, periodo = _os(d.get("os")), logic.validar_periodo(d.get("periodo"))
+    hoy = date.today()
+    if (periodo[2:], periodo[:2]) >= (f"{hoy.year:04d}", f"{hoy.month:02d}"):
+        raise ValueError("Solo se pueden archivar períodos anteriores al mes en curso.")
+    b = seguridad.crear_backup()
+    r = archivo.archivar(os_key, periodo)
+    if not r:
+        raise ValueError(f"No hay datos de {os_key} para archivar hasta {periodo}.")
+    A(u, "archivo.manual", os_key, "archivo", r["archivo"], backup_previo=b["nombre"], **r)
+    return r
+
+
+@app.get("/api/archivo/{nombre}")
+def archivo_descargar(nombre: str, u=Admin):
+    r = archivo.ruta(nombre)
+    if not r:
+        raise HTTPException(404, "Archivo inexistente.")
+    A(u, "archivo.descarga", nombre.split("_")[1], "archivo", nombre)
+    return FileResponse(r, media_type=XLSX, filename=nombre, headers={"Cache-Control": "no-store"})
 
 
 # ───────────────────────── pre-facturación / facturación ─────────────────────────
@@ -623,8 +661,13 @@ async def prefacturar(os: str = Form(...), periodo: str = Form(...), archivo: Up
     return r
 
 
-def _lineas(os_key, estado, periodo="", q="", cruce=""):
+def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro=""):
     sql, par = "SELECT * FROM lineas WHERE os=? AND estado=?", [os_key, estado]
+    if nro.strip():
+        sql += " AND nro_transaccion LIKE ?"
+        par.append(f"%{logic.limpiar_id(nro)}%")
+    cond, p2 = logic.filtro_profesional(prof)
+    sql, par = sql + cond, par + p2
     if periodo:
         sql += " AND periodo=?"
         par.append(periodo)
@@ -641,22 +684,24 @@ def _lineas(os_key, estado, periodo="", q="", cruce=""):
 
 
 @app.get("/api/lineas")
-def lineas(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", limite: int = 1500,
-           desde: int = 0, u=Auth):
+def lineas(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "", nro: str = "",
+           limite: int = 1500, desde: int = 0, u=Auth):
     os_key = _os(os)
     if estado not in ("prefact", "facturacion", "template"):
         raise HTTPException(400, "Estado inválido.")
-    filas = _lineas(os_key, estado, periodo, q, cruce)
+    filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro)
     pers = [r["periodo"] for r in db.q("SELECT DISTINCT periodo FROM lineas WHERE os=? AND estado=?", (os_key, estado))]
     tramo = filas[desde:desde + limite] if limite > 0 else filas
     return {"total": len(filas), "importe": round(sum(f["total"] or 0 for f in filas), 2),
             "listas": sum(1 for f in filas if not logic.validar_para_procesar(f)),
-            "periodos": sorted(pers, key=lambda p: (p[2:], p[:2]), reverse=True), "filas": tramo}
+            "periodos": sorted(pers, key=lambda p: (p[2:], p[:2]), reverse=True), "filas": tramo,
+            "profesionales": logic.opciones_profesional("lineas", os_key, "AND estado=?", (estado,))}
 
 
 @app.get("/api/lineas/exportar")
-def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", u=Auth):
-    filas = _lineas(_os(os), estado, periodo, q, cruce)
+def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "",
+                    nro: str = "", u=Auth):
+    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro)
     cols = ["periodo", "nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
             "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
             "valor_unit", "total", "origen_valor", "cruce", "observacion"]
@@ -756,6 +801,8 @@ def template_deshacer(tid: int, u=Auth):
     t = db.q1("SELECT os, nombre, filas, total FROM templates WHERE id=?", (tid,))
     if not t:
         raise HTTPException(404, "Template inexistente.")
+    if not db.scalar("SELECT COUNT(*) FROM lineas WHERE template_id=?", (tid,)):
+        raise ValueError("Las líneas de este template ya fueron archivadas: no se puede deshacer.")
     with db.tx() as c:
         c.execute("UPDATE lineas SET estado='facturacion', template_id=NULL WHERE template_id=?", (tid,))
         c.execute("DELETE FROM templates WHERE id=?", (tid,))
@@ -767,12 +814,13 @@ def template_deshacer(tid: int, u=Auth):
 
 @app.post("/api/presentaciones/{os}")
 async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""),
-                       archivo: UploadFile = File(...), u=Auth):
+                       archivo: UploadFile = File(...), validado: UploadFile | None = File(None), u=Auth):
     os_key = _os(os)
     periodo = logic.validar_periodo(periodo)
     datos, nombre = await _leer(archivo)
     if os_key == "GALENO":
-        salida, info = logic.convertir_galeno(datos, nombre, factura)
+        val = await _leer(validado) if validado is not None and validado.filename else None
+        salida, info = logic.convertir_galeno(datos, nombre, factura, val)
         archivo_out = f"Anexo de prestaciones_{periodo}.xlsx"
     elif os_key == "SANCOR":
         salida, info = logic.convertir_sancor(datos, nombre, factura)
@@ -780,12 +828,18 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
     else:
         raise HTTPException(400, "AVALIAN no requiere conversión.")
     A(u, "presentacion.convertir", os_key, "presentacion", periodo, archivo=nombre, salida=archivo_out,
-      factura=factura, filas=info["filas"], cuentas_sin_mp=info["sin_mp"])
+      factura=factura, filas=info["filas"], cuentas_sin_mp=info["sin_mp"],
+      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido") if k in info})
     return _descarga(salida, archivo_out, {"X-Filas": str(info["filas"]),
                                            "X-Sin-MP": quote(", ".join(info["sin_mp"][:60])),
                                            "X-Sin-MP-N": str(len(info["sin_mp"])),
                                            "X-Sin-Esp": quote(", ".join(info.get("sin_especialidad", [])[:60])),
-                                           "X-Sin-Esp-N": str(len(info.get("sin_especialidad", [])))})
+                                           "X-Sin-Esp-N": str(len(info.get("sin_especialidad", []))),
+                                           "X-Coseguro-Total": str(info.get("coseguro_total", "")),
+                                           "X-Coseguro-Filas": str(info.get("coseguro_filas", "")),
+                                           "X-Sin-Cruce-N": str(info.get("sin_cruce", "")),
+                                           "X-Sin-Cruce": quote(", ".join(info.get("sin_cruce_ej", []))),
+                                           "X-Excedidos": quote(", ".join(info.get("coseguro_excedido", [])))})
 
 
 # ───────────────────────── interfaz ─────────────────────────
