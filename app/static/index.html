@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Facturación Obras Sociales</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="login" class="login oculto">
+  <form id="fLogin" class="tarjeta">
+    <div class="marca">Facturación<span>OBRAS SOCIALES · C.M.S.C</span></div>
+    <label>Usuario<input name="usuario" autocomplete="username" required></label>
+    <label>Contraseña<input name="clave" type="password" autocomplete="current-password" required></label>
+    <button class="btn primario">Ingresar</button>
+    <p id="loginError" class="error"></p>
+  </form>
+</div>
+
+<div id="inicio" class="oculto">
+  <header class="top"><div class="ancho">
+    <div class="marca">Facturación<span>OBRAS SOCIALES · C.M.S.C</span></div>
+    <span class="sep"></span>
+    <span id="quien" class="quien"></span>
+    <button class="btn" id="miClave">Cambiar contraseña</button>
+    <button class="btn" id="salir0">Salir</button>
+  </div></header>
+  <div class="inicio">
+    <h1>Elegí la obra social</h1>
+    <p class="suave">El menú es el mismo para todas; se trabaja sobre la que elijas.</p>
+    <div id="tarjetasOS" class="tarjetasOS"></div>
+    <div id="adminZona" class="oculto">
+      <h3>Administración</h3>
+      <div class="fila">
+        <button class="btn" data-global="auditoria">Auditoría</button>
+        <button class="btn" data-global="backups">Copias de seguridad</button>
+        <button class="btn" data-global="usuarios">Usuarios</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="app" class="oculto">
+  <header class="top"><div class="ancho">
+    <div class="marca">Facturación<span>OBRAS SOCIALES · C.M.S.C</span></div>
+    <nav id="nav"></nav>
+    <span class="sep"></span>
+    <span id="quien2" class="quien"></span>
+    <button id="salir" class="btn">Salir</button>
+  </div></header>
+  <div class="sub"><div class="ancho">
+    <button id="volver" class="btn"><svg class="ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3 2.5 8 7 13M3 8h10.5"/></svg>Volver</button>
+    <div id="osLateral" class="osSub"></div>
+    <span class="sep"></span>
+    <div id="osActual" class="chip"></div>
+  </div></div>
+  <main>
+    <div class="cab">
+      <h2 id="titulo"></h2>
+      <div id="subtitulo" class="suave"></div>
+    </div>
+    <section id="vista"></section>
+  </main>
+</div>
+
+<div id="modal" class="modal oculto"><div class="caja" id="modalCaja" role="dialog" aria-modal="true"></div></div>
+<div id="toast" class="toast oculto" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

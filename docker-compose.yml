@@ -1,0 +1,11 @@
+# Solo para probar en una PC. En producción se usa Easypanel (ver README).
+services:
+  app:
+    build: .
+    environment:
+      ADMIN_PASSWORD: cambiar-esta-clave-2026
+      COOKIE_SECURE: "false"
+    ports: ["8000:8000"]
+    volumes: [datos:/data]
+volumes:
+  datos:

@@ -1,0 +1,169 @@
+/* Estilo alineado con ContaMed: barra superior con píldoras, azul marino, Montserrat. */
+@font-face{font-family:"Montserrat";font-style:normal;font-weight:100 900;font-display:swap;src:url(/static/fonts/montserrat-latin-ext-wght-normal.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Montserrat";font-style:normal;font-weight:100 900;font-display:swap;src:url(/static/fonts/montserrat-latin-wght-normal.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+:root{--bg:#f4f6fb;--panel:#fff;--tinta:#1d2740;--suave:#56617a;--linea:#e3e8f1;--navy:#1e3a8a;--navy2:#172d6e;
+--ok:#16794c;--okbg:#e3f5ec;--mal:#b3261e;--malbg:#fde8e6;--avi:#8a5a00;--avibg:#fff3d6;
+--sombra:0 1px 3px rgba(23,45,110,.10),0 1px 2px rgba(23,45,110,.06);--sombra2:0 6px 22px rgba(23,45,110,.10);
+--ease-out:cubic-bezier(.23,1,.32,1);--ancho:1500px}
+*{box-sizing:border-box}
+body{margin:0;font:500 13px/1.5 "Montserrat",system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--tinta);background:var(--bg);-webkit-font-smoothing:antialiased}
+.oculto{display:none!important}
+h1,h2{font-size:22px;font-weight:800;color:var(--navy);margin:0 0 4px;letter-spacing:-.015em;text-wrap:balance}
+h3{font-size:14px;font-weight:700;color:var(--navy);margin:0 0 12px}
+.suave{color:var(--suave);font-size:12px}.error{color:var(--mal);min-height:1.2em;margin:4px 0 0;font-size:12px}
+.sep{flex:1}
+.rotulo,label{font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#5b6680}
+.rotulo{margin:0 0 10px}
+label{display:grid;gap:5px}
+input,select,textarea{font:500 12.5px "Montserrat",system-ui,sans-serif;color:var(--tinta);padding:8px 10px;border:1px solid #d5dbe7;border-radius:8px;background:#fff;min-width:0;text-transform:none;letter-spacing:0}
+input:focus,select:focus{outline:2px solid #b9c8ee;border-color:var(--navy)}
+input:disabled{background:#f1f3f8;color:var(--suave)}
+input[type=checkbox]{width:15px;height:15px;padding:0;accent-color:var(--navy)}
+input[type=file]{padding:6px;font-size:12px}
+:focus-visible{outline:2px solid #7f9be0;outline-offset:2px}
+
+.btn{font:700 11.5px "Montserrat",system-ui,sans-serif;padding:8px 16px;border-radius:999px;border:1px solid var(--linea);background:#fff;color:var(--navy);cursor:pointer;white-space:nowrap;box-shadow:var(--sombra);text-decoration:none;display:inline-block;transition:background-color 150ms ease,box-shadow 150ms ease,transform 140ms var(--ease-out);text-transform:none;letter-spacing:0}
+.btn:active:not(:disabled){transform:scale(.97)}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.btn.primario{background:var(--navy);border-color:var(--navy);color:#fff}
+.btn.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn.peligro{color:var(--mal)}
+.btn.mini{padding:4px 11px;font-size:10.5px;box-shadow:none}
+label.btn{display:inline-block}
+
+/* barra superior */
+.top{background:#fff;padding:12px 26px;border-bottom:1px solid var(--linea);position:sticky;top:0;z-index:5}
+.ancho{display:flex;align-items:center;gap:10px;flex-wrap:wrap;max-width:calc(var(--ancho) - 52px);margin:0 auto}
+.marca{font-size:17px;font-weight:800;color:var(--navy);line-height:1.05;margin-right:14px}
+.marca span{display:block;font-size:8px;font-weight:700;letter-spacing:.16em;color:#5b6680;margin-top:3px}
+.quien{font-size:11.5px;font-weight:700;color:var(--navy)}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav button{font:700 11.5px "Montserrat",system-ui,sans-serif;padding:7px 13px;border-radius:999px;border:0;background:transparent;color:var(--navy);cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px;transition:background-color 150ms ease,color 150ms ease,transform 140ms var(--ease-out)}
+nav button:active{transform:scale(.97)}
+nav button.activo{background:var(--navy);color:#fff}
+nav button b{font-size:9.5px;font-weight:700;background:#e6ebf7;color:var(--navy);border-radius:999px;padding:1px 6px}
+nav button.activo b{background:rgba(255,255,255,.22);color:#fff}
+.sub{background:#fff;padding:9px 26px;border-bottom:1px solid var(--linea);box-shadow:0 4px 14px rgba(23,45,110,.05)}
+.sub .ancho{gap:14px}
+.osSub{font-weight:800;color:var(--navy);font-size:13px;padding:6px 2px;border-bottom:2px solid var(--navy)}
+.chip{font-size:10.5px;font-weight:700;color:var(--suave)}
+main{padding:26px;max-width:var(--ancho);margin:0 auto;min-width:0}
+.cab{margin:6px 0 18px}.cab .suave{max-width:70ch}
+
+/* login e inicio */
+.login{min-height:100vh;display:grid;place-items:center;padding:16px;background:linear-gradient(135deg,#152a6b,#3f63bd)}
+.login .tarjeta{width:100%;max-width:350px;display:grid;gap:14px;padding:28px;box-shadow:0 20px 50px rgba(10,20,60,.35)}
+.inicio{max-width:1020px;margin:0 auto;padding:36px 22px 50px}
+.tarjetasOS{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin:22px 0 38px}
+.tarjetasOS button{font:inherit;text-align:left;background:var(--panel);border:1px solid var(--linea);border-radius:16px;padding:22px;cursor:pointer;display:grid;gap:4px;color:var(--tinta);box-shadow:var(--sombra);transition:box-shadow 200ms var(--ease-out),transform 200ms var(--ease-out),border-color 200ms ease}
+.tarjetasOS button:active{transform:scale(.985)}
+.tarjetasOS strong{font-size:21px;font-weight:800;color:var(--navy)}.tarjetasOS small{color:var(--suave);font-size:11px}
+.tarjetasOS .datos{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-size:9.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#5b6680}
+.tarjetasOS .datos b{display:block;font-size:17px;font-weight:800;color:var(--tinta);letter-spacing:0}
+
+/* tarjetas, barras y banda */
+.tarjeta{background:var(--panel);border:1px solid var(--linea);border-radius:14px;padding:18px 20px;box-shadow:var(--sombra)}
+.bloque{margin-bottom:16px}
+.barra,.filtros{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:12px}
+.filtros{background:#fff;border:1px solid var(--linea);border-bottom:0;border-radius:14px 14px 0 0;padding:14px 16px;margin-bottom:0}
+.filtros + .tabla{border-radius:0 0 14px 14px}
+.fila{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.pasos{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:16px}
+.banda{background:linear-gradient(100deg,#152a6b 0%,#1e3a8a 45%,#4a70c8 100%);border-radius:14px;padding:16px 20px;margin-bottom:14px;color:#fff;display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;box-shadow:var(--sombra2)}
+.kpis{display:flex;flex-wrap:wrap;gap:8px 26px;flex:1}
+.kpi span{display:block;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#b9c8ee}
+.kpi b{display:block;font-size:16px;font-weight:800}
+.acciones{display:flex;flex-wrap:wrap;gap:8px}
+.banda .btn{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28);color:#fff;box-shadow:none}
+.banda .btn.primario,.banda .btn.ok{background:#fff;color:var(--navy);border-color:#fff}
+
+/* tablas */
+.tabla{background:var(--panel);border:1px solid var(--linea);border-radius:14px;overflow:auto;max-height:calc(100vh - 330px);min-height:150px;box-shadow:var(--sombra)}
+table{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums}
+th{position:sticky;top:0;background:#fff;text-align:left;padding:11px 9px;border-bottom:1.5px solid var(--linea);white-space:nowrap;font-size:9.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--navy);z-index:1}
+td{padding:7px 9px;border-bottom:1px solid #eef1f6;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+tr.sel td{background:#eaf0fc}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td.acc{position:sticky;right:0;background:#fff;box-shadow:-8px 0 8px -8px #cfd7e6}
+tr.sel td.acc{background:#eaf0fc}
+.vacio{padding:34px 18px;color:var(--suave);font-size:12.5px;max-width:60ch}
+.tablaCorta{max-height:50vh}
+td .detalle{max-width:520px;white-space:normal;word-break:break-word;font-size:11px;color:var(--suave)}
+
+.et{display:inline-block;padding:2px 9px;border-radius:999px;font-size:9.5px;font-weight:800;letter-spacing:.04em}
+.et.ok{background:var(--okbg);color:var(--ok)}.et.mal{background:var(--malbg);color:var(--mal)}.et.avi{background:var(--avibg);color:var(--avi)}
+.aviso{background:var(--avibg);color:var(--avi);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px}
+.aviso.ok{background:var(--okbg);color:var(--ok)}.aviso.mal{background:var(--malbg);color:var(--mal)}.aviso.info{background:#e8eefb;color:var(--navy)}
+.sinMargen{margin:12px 0 0}.enLinea{display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:12px;font-weight:500;color:var(--tinta)}
+.chips span{display:inline-block;background:#eef2fb;border-radius:999px;padding:2px 10px;margin:2px 4px 2px 0;font-size:11px;font-variant-numeric:tabular-nums;color:var(--navy);font-weight:600}
+.progreso{height:8px;background:#e6ebf7;border-radius:999px;overflow:hidden;margin:10px 0}.progreso div{height:100%;background:var(--navy);transition:width 600ms linear}
+pre.log{background:#101c3d;color:#c3cfee;padding:12px;border-radius:10px;max-height:240px;overflow:auto;font-size:11.5px;margin:8px 0 0;white-space:pre-wrap;word-break:break-word}
+a.enlace{color:var(--navy);font-weight:700}
+
+.modal{position:fixed;inset:0;background:rgba(16,28,61,.5);display:grid;place-items:center;padding:14px;z-index:20}
+.caja{background:#fff;border-radius:18px;padding:24px;width:100%;max-width:780px;max-height:92vh;overflow:auto;box-shadow:0 24px 60px rgba(10,20,60,.3)}
+.caja .pie{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;flex-wrap:wrap}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:11px 20px;border-radius:999px;z-index:30;max-width:90vw;font-weight:600;box-shadow:var(--sombra2)}
+.toast.mal{background:var(--mal);border-radius:14px}
+@media(max-width:820px){.top,.sub{padding:10px 12px}.ancho{max-width:none}main{padding:16px 12px}.marca{margin-right:4px}
+nav{order:5;width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px}.inicio{padding:22px 12px}}
+
+
+/* ── Pulido: superficies del navegador, estados y movimiento ───────────────── */
+html{scrollbar-color:#c3cde4 transparent;scrollbar-width:thin}
+::selection{background:#cfdbf7;color:var(--tinta)}
+input,textarea{caret-color:var(--navy)}
+::placeholder{color:#75809a;opacity:1}
+input::file-selector-button{font:700 11px "Montserrat",system-ui,sans-serif;color:var(--navy);background:#eef2fb;border:0;border-radius:999px;padding:5px 12px;margin-right:10px;cursor:pointer}
+input[type=date]::-webkit-calendar-picker-indicator{opacity:.55;cursor:pointer}
+select{cursor:pointer}
+.kpi b,.tarjetasOS .datos b{font-variant-numeric:tabular-nums}
+.ico{vertical-align:-2px;margin-right:6px;flex:none}
+.btn .ico:only-child{margin:0}
+.aviso .ico{margin-right:8px}
+.btn[aria-busy=true]{cursor:progress}
+.tabla:focus-visible{outline-offset:-2px}
+.girando{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;margin-right:8px;vertical-align:-2px;animation:giro .6s linear infinite}
+@keyframes giro{to{transform:rotate(360deg)}}
+.cargando{padding:34px 18px;color:var(--suave);font-size:12.5px}
+
+/* El hover solo donde existe puntero fino: en táctil queda "pegado" tras el toque */
+@media(hover:hover) and (pointer:fine){
+  .btn:hover:not(:disabled){background:#f1f4fb;box-shadow:0 3px 10px rgba(23,45,110,.14)}
+  .btn.primario:hover:not(:disabled){background:var(--navy2)}
+  .btn.ok:hover:not(:disabled){background:#0f5f3a}
+  .btn.peligro:hover:not(:disabled){background:var(--malbg)}
+  .banda .btn:hover:not(:disabled){background:rgba(255,255,255,.24);box-shadow:none}
+  .banda .btn.primario:hover:not(:disabled),.banda .btn.ok:hover:not(:disabled){background:#e9eefb}
+  nav button:hover:not(.activo){background:#eef2fb}
+  .tarjetasOS button:hover{border-color:#9fb3e6;box-shadow:var(--sombra2);transform:translateY(-2px)}
+  tr:hover td,tr:hover td.acc{background:#f6f8fd}
+  tr.sel:hover td,tr.sel:hover td.acc{background:#e3ebfb}
+}
+
+/* Entradas: desde un estado ya casi visible, con ease-out; nunca desde escala 0 */
+.modal{transition:opacity 180ms ease}
+.caja{transition:opacity 200ms var(--ease-out),transform 200ms var(--ease-out)}
+.toast{transition:opacity 220ms ease,transform 220ms var(--ease-out)}
+@starting-style{
+  .modal{opacity:0}
+  .caja{opacity:0;transform:scale(.97) translateY(6px)}
+  .toast{opacity:0;transform:translate(-50%,10px)}
+}
+/* Un único momento compuesto: las obras sociales al entrar */
+.tarjetasOS button{animation:asoma 380ms var(--ease-out) both}
+.tarjetasOS button:nth-child(2){animation-delay:50ms}
+.tarjetasOS button:nth-child(3){animation-delay:100ms}
+@keyframes asoma{from{opacity:0;transform:translateY(8px)}}
+
+@media(prefers-reduced-motion:reduce){
+  .btn,nav button,.tarjetasOS button,.caja,.toast{transition:opacity 150ms ease,background-color 150ms ease;transform:none}
+  .toast{transform:translateX(-50%)}
+  .tarjetasOS button{animation:none}
+  .tarjetasOS button:hover{transform:none}
+  @starting-style{.caja{transform:none}.toast{transform:translateX(-50%)}}
+  .girando{animation-duration:1.4s}
+}
+.btn .ico{margin-right:7px}
+#volver{display:inline-flex;align-items:center}
