@@ -295,48 +295,121 @@ VISTAS.padron = async () => {
 /* ───────────── Valores ───────────── */
 
 VISTAS.valores = async () => {
-  $("#subtitulo").textContent = "Grillas de valores por período. Al subir la grilla se extraen las prestaciones con su valor, por especialidad (hoja).";
+  $("#subtitulo").textContent = "Grilla normalizada: todas las solapas del Excel unificadas. Al lado, los valores por unidad, que son los que se cambian cada período.";
   const meta = await api("/api/valores/meta?os=" + S.os);
-  const per = S.filtros.periodo && meta.periodos.includes(S.filtros.periodo) ? S.filtros.periodo : (meta.periodos[0] || "");
-  const esp = S.filtros.esp || "", q = S.filtros.q || "";
-  let datos = { total: 0, filas: [] };
-  if (per) datos = await api("/api/valores?" + qs({ os: S.os, periodo: per, especialidad: esp, q }));
-  const cols = [{ k: "especialidad", t: "Especialidad" }, { k: "codigo", t: "Código OS" }, { k: "codigo_prestador", t: "Cód. prestador" },
-    { k: "descripcion", t: "Prestación" }, { k: "categoria", t: "Cat.", f: f => f.categoria === "R" ? `<span class="et avi">Recert.</span>` : "" },
-    { k: "valor", t: "Valor", num: true, f: f => pesos(f.valor) }, { k: "fila", t: "Fila grilla", num: true }];
+  const F = S.filtros;
+  const per = F.periodo && meta.periodos.includes(F.periodo) ? F.periodo : (meta.periodos[0] || "");
+  let d = { total: 0, filas: [], unidades: [], por_unidad: 0, fijas: 0 };
+  if (per) d = await api("/api/valores?" + qs({ os: S.os, periodo: per, especialidad: F.esp || "", q: F.q || "", tipo: F.tipo || "", unidad: F.unidad || "", limite: S.limite, desde: S.pagina * S.limite }));
+  const num = n => Number(n).toLocaleString("es-AR", { maximumFractionDigits: 2 });
+  const cols = [
+    { k: "codigo", t: "Código", f: f => esc(f.codigo || f.codigo_prestador) + (f.codigo && f.codigo_prestador && f.codigo !== f.codigo_prestador ? ` <span class="suave">/ ${esc(f.codigo_prestador)}</span>` : "") },
+    { k: "descripcion", t: "Descripción", f: f => esc(f.descripcion) + (f.grupo ? ` <span class="suave">· ${esc(f.grupo)}</span>` : "") },
+    { k: "especialidad", t: "Especialidad" },
+    { k: "categoria", t: "Cat.", f: f => f.categoria === "R" ? `<span class="et avi">Recert.</span>` : esc(f.categoria) },
+    { k: "unidades", t: "Cant. unidades", num: true, f: f => f.tipo_valor === "unidad" ? num(f.unidades) : `<span class="suave">N/A</span>` },
+    { k: "valor", t: "Valor", num: true, f: f => f.valor ? pesos(f.valor) : `<span class="et mal">sin unidad</span>` },
+    { k: "tipo_valor", t: "Tipo de valor", f: f => f.tipo_valor === "unidad" ? `<span class="et ok">Por unidad</span>` : `<span class="et">Fijo</span>` },
+    { k: "tipo_unidad", t: "Unidad", f: f => f.tipo_unidad ? `${esc(f.tipo_unidad)} <span class="suave">${pesos(f.valor_unidad)}</span>` : "" },
+  ];
+  const opc = (v, t, sel) => `<option value="${esc(v)}" ${String(v) === String(sel || "") ? "selected" : ""}>${esc(t)}</option>`;
   $("#vista").innerHTML = `
     <div class="tarjeta bloque"><h3>Subir grilla de ${S.os}</h3>
       <div class="fila">
         <label>Período de la grilla (MMAAAA)<input id="gPer" value="${esc(per || periodoPorDefecto())}" maxlength="6" size="8"></label>
-        <label>Archivo de la grilla<input type="file" id="gArch" accept=".xlsx,.xls,.csv"></label>
+        <label>Archivo de la grilla (Excel con todas las solapas)<input type="file" id="gArch" accept=".xlsx,.xls"></label>
         <button class="btn primario" id="gSubir">Subir y extraer</button>
-      </div>
-      <p class="suave">Si la grilla tiene una columna por vigencia, se toma la del período indicado (o la última anterior). Subir de nuevo el mismo período lo reemplaza.</p>
+        ${per ? `<span class="sep"></span><button class="btn" id="gCopiar">Nuevo período a partir de ${per}</button>` : ""}
+      </div><div id="gRes"></div>
     </div>
-    ${per ? `<div class="barra">
-      <label>Período<select id="fPer">${meta.periodos.map(p => `<option ${p === per ? "selected" : ""}>${p}</option>`).join("")}</select></label>
-      <label>Especialidad<select id="fEsp"><option value="">Todas</option>${(meta.especialidades[per] || []).map(e => `<option ${e === esp ? "selected" : ""}>${esc(e)}</option>`).join("")}</select></label>
-      <label>Buscar<input id="q" value="${esc(q)}" placeholder="Código o prestación"></label>
-      <span class="suave">${miles(datos.total)} filas${datos.total > datos.filas.length ? ` (se muestran ${miles(datos.filas.length)})` : ""}</span><span class="sep"></span>
-      <a class="btn" href="/api/valores/exportar?${qs({ os: S.os, periodo: per, especialidad: esp, q })}">Exportar Excel</a>
-      <button class="btn peligro" id="gBorrar">Eliminar período</button></div>` : ""}
-    ${tabla(cols, datos.filas, { vacio: "Todavía no hay grillas cargadas para esta obra social." })}`;
+    ${per ? `
+    <div class="banda"><div class="kpis">
+      <div class="kpi"><span>Prestaciones</span><b>${miles(d.total)}</b></div>
+      <div class="kpi"><span>Por unidad</span><b>${miles(d.por_unidad)}</b></div>
+      <div class="kpi"><span>Valor fijo</span><b>${miles(d.fijas)}</b></div>
+      <div class="kpi"><span>Valores de unidad</span><b>${miles(d.unidades.length)}</b></div></div>
+      <div class="acciones"><a class="btn" href="/api/valores/exportar?${qs({ os: S.os, periodo: per, especialidad: F.esp || "", q: F.q || "", tipo: F.tipo || "", unidad: F.unidad || "" })}">Exportar Excel</a>
+      <button class="btn" id="gBorrar">Eliminar período</button></div></div>
+    <div class="dosCol">
+      <div>
+        <div class="filtros">
+          <label>Período<select id="fPer">${meta.periodos.map(p => opc(p, p, per)).join("")}</select></label>
+          <label>Especialidad<select id="fEsp">${opc("", "Todas", F.esp)}${(meta.especialidades[per] || []).map(e => opc(e, e, F.esp)).join("")}</select></label>
+          <label>Tipo de valor<select id="fTipo">${opc("", "Todos", F.tipo)}${opc("unidad", "Por unidad", F.tipo)}${opc("fijo", "Fijo", F.tipo)}</select></label>
+          <label>Buscar<input id="q" value="${esc(F.q || "")}" placeholder="Código o descripción"></label>
+          ${paginador(d.total)}
+        </div>
+        ${tabla(cols, d.filas, { vacio: "Sin prestaciones para ese filtro.", acciones: f => f.tipo_valor === "fijo" ? `<button class="btn mini" data-fijo="${f.id}">Cambiar valor</button>` : "" })}
+      </div>
+      <aside class="tarjeta lateral">
+        <h3>Valores por unidad · ${per}</h3>
+        <p class="suave">Al cambiar un valor se recalculan todas las prestaciones que usan esa unidad (unidades × valor).</p>
+        ${F.unidad ? `<p><button class="btn mini" id="uQuitar">Ver todas las prestaciones</button></p>` : ""}
+        <div class="listaU">${d.unidades.length ? d.unidades.map(x => `
+          <div class="unidad ${String(F.unidad) === String(x.id) ? "sel" : ""}">
+            <div class="uCab"><b>${esc(x.tipo_unidad)}</b><span class="suave">${esc(x.especialidad)}</span></div>
+            <div class="uPie"><input value="${esc(String(x.valor).replace(".", ","))}" data-uid="${x.id}" data-orig="${x.valor}" inputmode="decimal" aria-label="Valor de ${esc(x.tipo_unidad)}">
+              <button class="btn mini primario" data-guardar="${x.id}" disabled>Guardar</button>
+              ${x.prestaciones ? `<button class="btn mini" data-ver="${x.id}">${miles(x.prestaciones)} prest.</button>` : `<span class="suave">${x.origen === "general" ? "referencia" : "sin uso"}</span>`}
+            </div>
+            ${x.origen === "deducida" ? `<div class="suave">Deducida de los valores de la grilla</div>` : x.origen === "modificada" ? `<div class="suave">Modificada a mano</div>` : ""}
+          </div>`).join("") : `<div class="vacio">Esta selección no tiene valores por unidad.</div>`}</div>
+      </aside>
+    </div>` : `<div class="tabla"><div class="vacio">Todavía no hay grillas cargadas para esta obra social. Subí el Excel de la grilla tal como lo entrega la obra social.</div></div>`}`;
+
+  const recargar = () => VISTAS.valores().catch(fallo);
   $("#gSubir").onclick = async () => {
     const a = $("#gArch").files[0]; if (!a) return toast("Elegí el archivo de la grilla", true);
-    $("#gSubir").disabled = true; $("#gSubir").textContent = "Procesando…";
+    const b = $("#gSubir"); b.disabled = true; b.setAttribute("aria-busy", "true"); b.textContent = "Procesando…";
     try {
       const r = await subir("/api/valores/importar", { os: S.os, periodo: $("#gPer").value }, a);
-      S.filtros = { periodo: r.periodo };
-      toast(`${miles(r.filas)} prestaciones extraídas de ${r.hojas.filter(h => h.filas).length} hoja(s)`);
+      S.filtros = { periodo: r.periodo }; S.pagina = 0;
       contadores(); await VISTAS.valores();
-    } catch (err) { fallo(err); $("#gSubir").disabled = false; $("#gSubir").textContent = "Subir y extraer"; }
+      $("#gRes").innerHTML = `<div class="aviso ok sinMargen" role="status">${ICO.ok}${miles(r.filas)} prestaciones unificadas de ${r.hojas.length} solapa(s): ${miles(r.por_unidad)} por unidad y ${miles(r.fijas)} de valor fijo · ${miles(r.unidades)} valores de unidad.</div>
+        <div class="chips sinMargen">${r.hojas.map(h => `<span>${esc(h.hoja)}: ${miles(h.prestaciones)}</span>`).join("")}</div>`;
+    } catch (err) { fallo(err); b.disabled = false; b.removeAttribute("aria-busy"); b.textContent = "Subir y extraer"; }
   };
   if (!per) return;
-  $("#fPer").onchange = e => { S.filtros = { periodo: e.target.value }; VISTAS.valores(); };
-  $("#fEsp").onchange = e => { S.filtros.esp = e.target.value; VISTAS.valores(); };
-  $("#q").oninput = conDemora(e => { S.filtros.q = e.target.value; VISTAS.valores().then(() => { const i = $("#q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); });
+  $("#gCopiar").onclick = () => {
+    modal(`<h3>Nuevo período a partir de ${per}</h3><p class="suave">Copia las prestaciones y los valores por unidad de ${per}. Después solo cambiás los valores de unidad del período nuevo.</p>
+      <form id="fcp"><label>Período nuevo (MMAAAA)<input name="destino" maxlength="6" required pattern="(0[1-9]|1[0-2])[0-9]{4}"></label>
+      <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Crear período</button></div></form>`);
+    $("#fcp").onsubmit = async e => {
+      e.preventDefault();
+      const destino = new FormData(e.target).get("destino");
+      try { const r = await api("/api/valores/copiar", { json: { os: S.os, origen: per, destino } }); cerrarModal(); toast(`Período ${destino} creado con ${miles(r.prestaciones)} prestaciones`); S.filtros = { periodo: destino }; contadores(); recargar(); } catch (err) { fallo(err); }
+    };
+  };
+  enlazarPaginador(recargar);
+  $("#fPer").onchange = e => { S.filtros = { periodo: e.target.value }; S.pagina = 0; recargar(); };
+  $("#fEsp").onchange = e => { F.esp = e.target.value; F.unidad = ""; S.pagina = 0; recargar(); };
+  $("#fTipo").onchange = e => { F.tipo = e.target.value; S.pagina = 0; recargar(); };
+  $("#q").oninput = conDemora(e => { F.q = e.target.value; S.pagina = 0; VISTAS.valores().then(() => { const i = $("#q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }).catch(fallo); });
+  if ($("#uQuitar")) $("#uQuitar").onclick = () => { F.unidad = ""; S.pagina = 0; recargar(); };
+  $$("[data-ver]").forEach(b => b.onclick = () => { F.unidad = b.dataset.ver; F.esp = ""; S.pagina = 0; recargar(); });
+  const aNum = t => Number(String(t).trim().replace(/\./g, "").replace(",", "."));
+  $$("[data-uid]").forEach(i => {
+    const boton = $(`[data-guardar="${i.dataset.uid}"]`);
+    i.oninput = () => { const v = aNum(i.value); boton.disabled = !(v > 0) || Math.abs(v - Number(i.dataset.orig)) < 0.00005; };
+    i.onkeydown = e => { if (e.key === "Enter" && !boton.disabled) boton.click(); };
+    boton.onclick = async () => {
+      const x = d.unidades.find(u => u.id === +i.dataset.uid), v = aNum(i.value);
+      if (!await confirmar(`¿Cambiar «${x.tipo_unidad}» de ${x.especialidad} de ${pesos(x.valor)} a ${pesos(v)}? Se recalculan ${miles(x.prestaciones)} prestaciones del período ${per}.`, "Cambiar valor")) return;
+      try { const r = await api("/api/unidades/" + x.id, { method: "PUT", json: { valor: v } }); toast(`Unidad actualizada · ${miles(r.recalculadas)} prestaciones recalculadas`); recargar(); } catch (err) { fallo(err); }
+    };
+  });
+  $$("[data-fijo]").forEach(b => b.onclick = () => {
+    const f = d.filas.find(x => x.id === +b.dataset.fijo);
+    modal(`<h3>Cambiar valor fijo</h3><p>${esc(f.codigo || f.codigo_prestador)} · ${esc(f.descripcion)}</p>
+      <form id="ffj"><label>Valor<input name="valor" value="${esc(String(f.valor).replace(".", ","))}" inputmode="decimal" required></label>
+      <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Guardar</button></div></form>`);
+    $("#ffj").onsubmit = async e => {
+      e.preventDefault();
+      try { await api("/api/valores/" + f.id, { method: "PUT", json: { valor: aNum(new FormData(e.target).get("valor")) } }); cerrarModal(); toast("Valor actualizado"); recargar(); } catch (err) { fallo(err); }
+    };
+  });
   $("#gBorrar").onclick = async () => {
-    if (!await confirmar(`¿Eliminar la grilla ${per} de ${S.os}?`, "Eliminar", "peligro")) return;
+    if (!await confirmar(`¿Eliminar la grilla ${per} de ${S.os}, con sus valores por unidad?`, "Eliminar", "peligro")) return;
     try { await api("/api/valores?" + qs({ os: S.os, periodo: per }), { method: "DELETE" }); S.filtros = {}; ir("valores"); } catch (err) { fallo(err); }
   };
 };

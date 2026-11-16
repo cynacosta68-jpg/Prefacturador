@@ -21,13 +21,44 @@ seguridad y Usuarios.
 | Sección | Qué hace |
 |---|---|
 | **Padrón** | Base de profesionales por obra social. Importar reemplaza el padrón de esa obra social. Alta, edición, baja y exportación. |
-| **Valores** | Se sube la grilla de la obra social indicando el período (MMAAAA). Extrae, hoja por hoja (especialidad), las filas con valor. Si la grilla tiene una columna por vigencia toma la del período (o la última anterior). Filtro por período y especialidad, exportable. |
+| **Valores** | Se sube el Excel de la grilla (todas las solapas) indicando el período. Se unifica en una tabla de prestaciones y, al lado, los valores por unidad editables. Ver «Grillas de valores». |
 | **Bot EVWEB** | Extrae de EVWEB con obra social = la elegida, estado «APROBADO EN OBRA SOCIAL», facturadas «NO» y el rango de fechas de carga que elige el usuario, fragmentado en tramos de 9 días. Usuario y contraseña de EVWEB se piden en cada extracción y no se guardan. También admite importar un Excel de EVWEB bajado a mano. |
 | **Datos extraídos EVWEB** | Todo lo extraído, solo consulta, exportable a Excel. No se puede modificar. Filas idénticas no se duplican. |
 | **Pre-facturación** | Se sube el archivo de prestaciones validadas y el período; «Comenzar a prefacturar» cruza cada fila con EVWEB por número de transacción, completa cuenta / matrícula / CUIT / especialidad / categoría desde el padrón y valoriza. Cada línea se puede modificar, eliminar o **Procesar** (individual o masivo). |
 | **Facturación** | Líneas procesadas. Se pueden modificar o **Rechazar** (vuelven a Pre-facturación). Vista de a 1500 filas o todas, selección y **Generar template**. |
 | **Templates** | `Template_facturacion_<período>_<NN>` (ej. `Template_facturacion_112026_01`). Descargar o **Deshacer** (las líneas vuelven a Facturación). |
 | **Presentaciones** | GALENO: convierte `PrestacionesExport` a la `PlanillaPrestaciones_Galeno` y descarga `Anexo de prestaciones_MMAAAA`. SANCOR: agrega la columna `MP` después de `Matricula`. AVALIAN: enlace al portal. Al descargar se abre el portal de la obra social. |
+
+## Grillas de valores
+
+Cada obra social entrega un Excel con una solapa por especialidad y cada solapa está armada distinto. Al subirlo,
+todas las solapas se unifican en dos tablas:
+
+**Prestaciones** — código (de la obra social y/o del prestador), descripción, especialidad, cantidad de unidades
+(`N/A` si es valor fijo), valor y tipo de valor (`Fijo` / `Por unidad`).
+
+**Valores por unidad** — tipo de unidad, valor, período y especialidad. Son los que se cambian: al modificar uno se
+recalculan todas las prestaciones que lo usan (`unidades × valor de la unidad`).
+
+Cómo se normaliza cada solapa:
+
+- El **valor de la unidad** se toma del rótulo de la solapa o sección («Valor Unidad», «V. UNIDAD», «UQ», «UHP»,
+  el número bajo la fecha de vigencia). Si la solapa no lo declara pero las filas traen unidades y valor, se deduce
+  (valor ÷ unidades) y queda marcado como «deducida».
+- Las **unidades** de cada prestación salen de su columna (UQ, Unidades), de la tabla de niveles o complejidades de
+  la solapa, o de dividir el valor por el valor de la unidad cuando da un múltiplo exacto.
+- Si la solapa tiene una columna por vigencia, se usa la del período indicado (o la última anterior).
+- Categorías A/B/C y recertificados generan una fila por categoría, con su propia unidad.
+- Los módulos por complejidad («Complejidad 3» seguido de la lista de prácticas) asignan a cada práctica el código,
+  las unidades y el valor de su complejidad.
+- En los nomencladores quirúrgicos el valor es el **honorario del cirujano**; la cantidad de ayudantes queda como dato.
+- Lo que no tiene valor numérico («por presupuesto», «no convenido») no se carga.
+
+Para un mes nuevo sin Excel nuevo: **Nuevo período a partir de…** copia la grilla y solo hay que cambiar los valores
+por unidad. Si el archivo subido no es una grilla (por ejemplo, el padrón), se rechaza.
+
+Límites conocidos: las grillas son planillas armadas a mano; conviene revisar el resumen por solapa que se muestra
+al subir y, ante un valor raro, las columnas Solapa y Fila del Excel exportado indican de dónde salió.
 
 ## Reglas implementadas
 
@@ -124,6 +155,6 @@ pip install -r requirements.txt
 DATA_DIR=./data ADMIN_PASSWORD=prueba12345 COOKIE_SECURE=false uvicorn app.main:app --reload
 ```
 
-Estructura: `app/evweb_bot.py` (Playwright), `app/logic.py` (lectura de archivos, cruce, grillas, template,
+Estructura: `app/evweb_bot.py` (Playwright), `app/grillas.py` (normalización de grillas), `app/logic.py` (lectura de archivos, cruce, template,
 conversores), `app/main.py` (API), `app/seguridad.py` (usuarios, sesiones, auditoría, copias), `app/db.py` (SQLite), `app/static` (interfaz sin build),
 `assets/PlanillaPrestaciones_Galeno.xlsx` (modelo vacío del portal de Galeno).

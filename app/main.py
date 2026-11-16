@@ -384,52 +384,126 @@ def valores_meta(os: str, u=Auth):
     pers = [r["periodo"] for r in db.q("SELECT DISTINCT periodo FROM valores WHERE os=?", (os_key,))]
     pers.sort(key=lambda p: (p[2:], p[:2]), reverse=True)
     esp = {p: [r["especialidad"] for r in db.q(
-        "SELECT DISTINCT especialidad FROM valores WHERE os=? AND periodo=? ORDER BY id", (os_key, p))] for p in pers}
+        "SELECT especialidad, MIN(id) m FROM valores WHERE os=? AND periodo=? GROUP BY especialidad ORDER BY m",
+        (os_key, p))] for p in pers}
     return {"periodos": pers, "especialidades": esp}
 
 
-def _valores(os_key, periodo, especialidad, q):
-    sql, par = "SELECT * FROM valores WHERE os=? AND periodo=?", [os_key, periodo]
-    if especialidad:
-        sql += " AND especialidad=?"
-        par.append(especialidad)
-    filas = db.q(sql + " ORDER BY id", par)
+def _valores(os_key, periodo, especialidad="", q="", tipo="", unidad=0):
+    sql = ("SELECT v.*, u.tipo_unidad, u.valor valor_unidad FROM valores v LEFT JOIN unidades u ON u.id=v.unidad_id "
+           "WHERE v.os=? AND v.periodo=?")
+    par = [os_key, periodo]
+    for campo, val in (("v.especialidad", especialidad), ("v.tipo_valor", tipo), ("v.unidad_id", unidad)):
+        if val:
+            sql += f" AND {campo}=?"
+            par.append(val)
+    filas = db.q(sql + " ORDER BY v.id", par)
     if q:
         b = logic.norm(q)
-        filas = [f for f in filas if b in logic.norm(f"{f['codigo']} {f['codigo_prestador']} {f['descripcion']}")]
+        filas = [f for f in filas if b in logic.norm(
+            f"{f['codigo']} {f['codigo_prestador']} {f['descripcion']} {f['seccion']} {f['grupo']}")]
+    return filas
+
+
+def _unidades(os_key, periodo, especialidad=""):
+    filas = db.q("SELECT u.*, (SELECT COUNT(*) FROM valores v WHERE v.unidad_id=u.id) prestaciones FROM unidades u "
+                 "WHERE u.os=? AND u.periodo=? ORDER BY (u.origen='general'), u.id", (os_key, periodo))
+    if especialidad:
+        usadas = {r["unidad_id"] for r in db.q(
+            "SELECT DISTINCT unidad_id FROM valores WHERE os=? AND periodo=? AND especialidad=?",
+            (os_key, periodo, especialidad))}
+        filas = [f for f in filas if f["id"] in usadas or f["especialidad"] == especialidad]
     return filas
 
 
 @app.get("/api/valores")
-def valores(os: str, periodo: str, especialidad: str = "", q: str = "", u=Auth):
-    filas = _valores(_os(os), periodo, especialidad, q)
-    return {"total": len(filas), "filas": filas[:3000]}
+def valores(os: str, periodo: str, especialidad: str = "", q: str = "", tipo: str = "", unidad: int = 0,
+            limite: int = 1500, desde: int = 0, u=Auth):
+    filas = _valores(_os(os), periodo, especialidad, q, tipo, unidad)
+    return {"total": len(filas), "por_unidad": sum(1 for f in filas if f["tipo_valor"] == "unidad"),
+            "fijas": sum(1 for f in filas if f["tipo_valor"] == "fijo"),
+            "filas": filas[desde:desde + limite] if limite > 0 else filas,
+            "unidades": _unidades(_os(os), periodo, especialidad)}
 
 
 @app.post("/api/valores/importar")
 async def valores_importar(os: str = Form(...), periodo: str = Form(...), archivo: UploadFile = File(...), u=Auth):
     datos, nombre = await _leer(archivo)
     r = logic.importar_grilla(_os(os), periodo, datos, nombre)
-    A(u, "valores.importar", _os(os), "grilla", r["periodo"], archivo=nombre, filas=r["filas"])
+    A(u, "valores.importar", _os(os), "grilla", r["periodo"], archivo=nombre, prestaciones=r["filas"],
+      por_unidad=r["por_unidad"], fijas=r["fijas"], unidades=r["unidades"], solapas=r["hojas"])
     return r
+
+
+@app.post("/api/valores/copiar")
+async def valores_copiar(request: Request, u=Auth):
+    d = await request.json()
+    os_key = _os(d.get("os"))
+    origen, destino = logic.validar_periodo(d.get("origen")), logic.validar_periodo(d.get("destino"))
+    r = logic.grillas.copiar_periodo(os_key, origen, destino)
+    A(u, "valores.copiar_periodo", os_key, "grilla", destino, origen=origen, **r)
+    return r
+
+
+@app.put("/api/unidades/{uid}")
+async def unidad_editar(uid: int, request: Request, u=Auth):
+    d = await request.json()
+    r = logic.grillas.cambiar_unidad(uid, logic.num(d.get("valor")))
+    un = r.pop("unidad")
+    A(u, "valores.unidad_modificar", un["os"], "unidad", uid, periodo=un["periodo"], especialidad=un["especialidad"],
+      tipo_unidad=un["tipo_unidad"], **r)
+    return r
+
+
+@app.put("/api/valores/{vid}")
+async def valor_editar(vid: int, request: Request, u=Auth):
+    d = await request.json()
+    v = db.q1("SELECT * FROM valores WHERE id=?", (vid,))
+    if not v:
+        raise HTTPException(404, "Prestación inexistente.")
+    if v["tipo_valor"] == "unidad" and v["unidad_id"]:
+        raise ValueError("Esta prestación se calcula por unidades: cambiá el valor de la unidad.")
+    nuevo = logic.num(d.get("valor"))
+    if nuevo <= 0:
+        raise ValueError("El valor debe ser mayor que cero.")
+    with db.tx() as c:
+        c.execute("UPDATE valores SET valor=? WHERE id=?", (round(nuevo, 2), vid))
+    A(u, "valores.valor_fijo_modificar", v["os"], "valor", vid, periodo=v["periodo"], codigo=v["codigo"] or v["codigo_prestador"],
+      descripcion=v["descripcion"][:80], antes=v["valor"], despues=round(nuevo, 2))
+    return {"ok": True}
 
 
 @app.delete("/api/valores")
 def valores_borrar(os: str, periodo: str, u=Auth):
     with db.tx() as c:
         n = c.execute("DELETE FROM valores WHERE os=? AND periodo=?", (_os(os), periodo)).rowcount
+        c.execute("DELETE FROM unidades WHERE os=? AND periodo=?", (_os(os), periodo))
     A(u, "valores.eliminar", _os(os), "grilla", periodo, filas=n)
     return {"ok": True}
 
 
 @app.get("/api/valores/exportar")
-def valores_exportar(os: str, periodo: str, especialidad: str = "", q: str = "", u=Auth):
-    filas = _valores(_os(os), periodo, especialidad, q)
-    df = pd.DataFrame([{"Especialidad": f["especialidad"], "Código OS": f["codigo"],
-                        "Código prestador": f["codigo_prestador"], "Descripción": f["descripcion"],
-                        "Categoría": f["categoria"], "Valor": f["valor"], "Fila grilla": f["fila"]} for f in filas])
+def valores_exportar(os: str, periodo: str, especialidad: str = "", q: str = "", tipo: str = "", unidad: int = 0, u=Auth):
+    filas = _valores(_os(os), periodo, especialidad, q, tipo, unidad)
+    df = pd.DataFrame([{
+        "Código": f["codigo"], "Código prestador": f["codigo_prestador"], "Descripción": f["descripcion"],
+        "Especialidad": f["especialidad"], "Categoría": f["categoria"],
+        "Cantidad de unidades": f["unidades"] if f["tipo_valor"] == "unidad" else "N/A",
+        "Valor": f["valor"], "Tipo de valor": "Por unidad" if f["tipo_valor"] == "unidad" else "Fijo",
+        "Tipo de unidad": f["tipo_unidad"] or "", "Valor de la unidad": f["valor_unidad"],
+        "Ayudantes": f["ayudantes"], "Grupo": f["grupo"], "Sección": f["seccion"],
+        "Solapa": f["hoja"], "Fila": f["fila"]} for f in filas])
+    un = pd.DataFrame([{"Especialidad": x["especialidad"], "Tipo de unidad": x["tipo_unidad"], "Valor": x["valor"],
+                        "Período": x["periodo"], "Prestaciones que la usan": x["prestaciones"],
+                        "Origen": x["origen"]} for x in _unidades(_os(os), periodo, especialidad)])
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name="Prestaciones")
+        un.to_excel(w, index=False, sheet_name="Valores por unidad")
+        for h in w.sheets.values():
+            logic.sin_formulas(h)
     A(u, "valores.exportar", _os(os), "grilla", periodo, filas=len(filas))
-    return _descarga(logic.df_a_xlsx(df, "Valores"), f"Valores_{_os(os)}_{periodo}.xlsx")
+    return _descarga(out.getvalue(), f"Valores_{_os(os)}_{periodo}.xlsx")
 
 
 # ───────────────────────── EVWEB ─────────────────────────

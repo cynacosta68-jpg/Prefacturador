@@ -20,13 +20,23 @@ CREATE TABLE IF NOT EXISTS profesionales (
 );
 CREATE INDEX IF NOT EXISTS ix_prof_os ON profesionales(os);
 
+-- Grillas normalizadas: valores por unidad (lo que cambia mes a mes) y prestaciones
+CREATE TABLE IF NOT EXISTS unidades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    os TEXT NOT NULL, periodo TEXT NOT NULL,
+    especialidad TEXT, tipo_unidad TEXT, valor REAL NOT NULL,
+    origen TEXT, hoja TEXT, fila INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_uni ON unidades(os, periodo);
 CREATE TABLE IF NOT EXISTS valores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     os TEXT NOT NULL, periodo TEXT NOT NULL,
-    especialidad TEXT, codigo TEXT, codigo_prestador TEXT, descripcion TEXT,
-    categoria TEXT, valor REAL, fila INTEGER
+    especialidad TEXT, seccion TEXT, codigo TEXT, codigo_prestador TEXT, descripcion TEXT,
+    categoria TEXT, unidades REAL, tipo_valor TEXT NOT NULL DEFAULT 'fijo', unidad_id INTEGER,
+    valor REAL, valor_grilla REAL, ayudantes TEXT, grupo TEXT, hoja TEXT, fila INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_val ON valores(os, periodo, codigo);
+CREATE INDEX IF NOT EXISTS ix_val_u ON valores(unidad_id);
 
 CREATE TABLE IF NOT EXISTS evweb_extracciones (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,6 +108,10 @@ def conn():
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA secure_delete=ON")
+        # Versión anterior de las grillas (sin unidades): se descarta, hay que volver a subirlas
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(valores)").fetchall()]
+        if cols and "tipo_valor" not in cols:
+            _conn.execute("DROP TABLE valores")
         _conn.executescript(SCHEMA)
     return _conn
 

@@ -12,7 +12,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 
-from . import db
+from . import db, grillas
 
 OBRAS = {
     "AVALIAN": {"codigo": "10067", "nombre": "10067 - A.C.A. SALUD (AVALIAN)"},
@@ -271,185 +271,13 @@ class Padron:
 
 
 # ───────────────────────── valores (grillas) ─────────────────────────
-# Las grillas son planillas armadas a mano: una hoja por especialidad, títulos
-# en varias filas, una columna de valor por vigencia, etc. Se extrae, por hoja,
-# cada fila que tenga un valor numérico y un código o una descripción.
-
-_RE_NUM = re.compile(r"^-?\d+(\.\d+)?$")
-_RE_FECHA = re.compile(r"^(20[2-3]\d)-(\d{2})-(\d{2})( 00:00:00)?$")
-_RE_FECHA_COD = re.compile(r"^(\d{4})-(\d{2})-(\d{2})( 00:00:00)?$")
-
-
-def _periodo_de_celda(v):
-    m = _RE_FECHA.match(v or "")
-    if not m:
-        return None
-    a, mes, dia = m.group(1), int(m.group(2)), int(m.group(3))
-    if dia != 1 and mes == 1 and dia <= 12:   # 01/09 leído como 9 de enero
-        mes = dia
-    return f"{mes:02d}{a}"
-
-
-def _codigo(v):
-    """Limpia una celda de código. Excel convierte códigos como 02.03.08 en fechas."""
-    v = (v or "").strip()
-    m = _RE_FECHA_COD.match(v)
-    if m:
-        return m.group(1)[2:] + m.group(2) + m.group(3)
-    if v in ("-", "S/N", "s/n"):
-        return ""
-    return v
-
-
-def _clave_periodo(p):
-    return (p[2:], p[:2])  # (AAAA, MM)
-
-
-def _extraer_hoja(filas, periodo):
-    ncols = max((len(f) for f in filas), default=0)
-    cab = filas[:12]
-    per_cols, cod_cols, fila_cab = {}, [], -1
-    col_desc, cols_valor = None, []
-    for i, f in enumerate(cab):
-        for j, v in enumerate(f):
-            n = norm(v)
-            p = _periodo_de_celda(v)
-            if p:
-                per_cols.setdefault(j, p)
-            elif n.startswith("cod") and len(n) < 40:
-                if j not in [c for c, _ in cod_cols]:
-                    cod_cols.append((j, n))
-                fila_cab = max(fila_cab, i)
-    if fila_cab >= 0:
-        for i in range(max(0, fila_cab - 1), min(len(filas), fila_cab + 2)):
-            for j, v in enumerate(filas[i]):
-                n = norm(v)
-                if col_desc is None and any(k in n for k in ("descrip", "concepto", "especialidades", "operaciones")):
-                    col_desc = j
-                if any(k in n for k in ("total", "arancel", "valor", "importe")) and "unidad" not in n \
-                        and "uq" not in n.split() and len(n) < 30:
-                    pr = 0 if "total" in n else 1 if "arancel" in n else 2
-                    cols_valor.append((pr, -j, j))
-    # columna de valor: la de la vigencia pedida (o la última anterior); si no, la titulada
-    col_val = None
-    if per_cols:
-        exactas = [j for j, p in per_cols.items() if p == periodo]
-        previas = sorted([(_clave_periodo(p), -j) for j, p in per_cols.items()
-                          if _clave_periodo(p) <= _clave_periodo(periodo)])
-        if exactas:
-            col_val = min(exactas)
-        elif previas:
-            col_val = -previas[-1][1]
-            mejor = previas[-1][0]
-            col_val = min(j for j, p in per_cols.items() if _clave_periodo(p) == mejor)
-    if col_val is None and cols_valor:
-        col_val = sorted(cols_valor)[0][2]
-    c_os = cod_cols[0][0] if cod_cols else None
-    c_pp = next((j for j, n in cod_cols if "prest" in n or n.endswith(" pp")), None)
-    if c_pp == c_os:
-        c_os = next((j for j, n in cod_cols if j != c_pp), c_pp)
-    solo_cods = {j for j, _ in cod_cols}
-    out = []
-    for i, f in enumerate(filas):
-        if i <= fila_cab:
-            continue
-        f = f + [""] * (ncols - len(f))
-        cod = _codigo(f[c_os]) if c_os is not None else ""
-        cpp = _codigo(f[c_pp]) if c_pp is not None and c_pp != c_os else ""
-        if c_os is None and f and (re.match(r"^\d[\d.]{3,}\w*$", f[0]) or _RE_FECHA_COD.match(f[0])):
-            cod = _codigo(f[0])
-        valor = None
-        if col_val is not None:
-            if _RE_NUM.match(f[col_val]):
-                valor = float(f[col_val])
-        else:
-            for j in range(ncols - 1, -1, -1):
-                if j in solo_cods or (c_os is None and j == 0):
-                    continue
-                if _RE_NUM.match(f[j]) and float(f[j]) > 0:
-                    valor = float(f[j])
-                    break
-        if not valor or valor <= 0 or (valor < 50 and valor == int(valor)):
-            continue   # niveles, unidades o cantidad de ayudantes: no son valores
-        if col_desc is not None and f[col_desc] and not _RE_NUM.match(f[col_desc]):
-            desc = f[col_desc]
-        else:
-            textos = [v for j, v in enumerate(f) if v and not _RE_NUM.match(v) and not _RE_FECHA_COD.match(v)
-                      and j not in solo_cods and v != cod]
-            desc = max(textos, key=len) if textos else ""
-        if not cod and not cpp and not desc:
-            continue
-        cat = "R" if (re.search(r"\bRE1\b", cod) or re.search(r"\dR$", cod) or re.search(r"\dR$", cpp)
-                      or "recertif" in norm(desc)) else ""
-        m = re.match(r"^(\d[\d.]{3,}\w*)", cod)
-        cod_limpio = m.group(1) if m and (" " in cod or "/" in cod) else cod
-        if cod_limpio != cod:
-            desc = f"{desc} [{cod}]".strip()
-        out.append(dict(codigo=cod_limpio, codigo_prestador=cpp, descripcion=" ".join(desc.split())[:300],
-                        categoria=cat, valor=round(valor, 2), fila=i + 1))
-    return out
-
+# La extracción y normalización vive en grillas.py
 
 def importar_grilla(os_key, periodo, contenido, nombre):
-    periodo = validar_periodo(periodo)
-    if nombre.lower().endswith((".csv", ".txt")):
-        hojas = {"GRILLA": leer_tabla(contenido, nombre)}
-        hojas = {"GRILLA": pd.concat([pd.DataFrame([hojas["GRILLA"].columns]), hojas["GRILLA"]])}
-    else:
-        engine = "openpyxl" if contenido[:2] == b"PK" else "xlrd"
-        hojas = pd.read_excel(io.BytesIO(contenido), sheet_name=None, header=None, dtype=str, engine=engine)
-    registros, resumen = [], []
-    for hoja, df in hojas.items():
-        filas = [[txt(v) for v in fila] for fila in df.values.tolist()]
-        ext = _extraer_hoja(filas, periodo)
-        resumen.append({"hoja": str(hoja).strip(), "filas": len(ext)})
-        for e in ext:
-            registros.append((os_key, periodo, str(hoja).strip(), e["codigo"], e["codigo_prestador"],
-                              e["descripcion"], e["categoria"], e["valor"], e["fila"]))
-    if not registros:
-        raise ValueError("No se encontraron filas con valores en la grilla.")
-    with db.tx() as c:
-        c.execute("DELETE FROM valores WHERE os=? AND periodo=?", (os_key, periodo))
-        c.executemany(
-            "INSERT INTO valores(os,periodo,especialidad,codigo,codigo_prestador,descripcion,categoria,valor,fila)"
-            " VALUES (?,?,?,?,?,?,?,?,?)", registros)
-    return {"filas": len(registros), "periodo": periodo, "hojas": resumen}
+    return grillas.importar(os_key, validar_periodo(periodo), contenido, nombre)
 
 
-class Grilla:
-    """Búsqueda de valor por código (de la obra social o del prestador)."""
-
-    def __init__(self, os_key, periodo):
-        self.os = os_key
-        periodos = [r["periodo"] for r in db.q("SELECT DISTINCT periodo FROM valores WHERE os=?", (os_key,))]
-        previos = sorted([p for p in periodos if _clave_periodo(p) <= _clave_periodo(periodo)], key=_clave_periodo)
-        self.periodo = previos[-1] if previos else None   # el pedido o el último anterior
-        self.idx = {}
-        if self.periodo:
-            for f in db.q("SELECT * FROM valores WHERE os=? AND periodo=? ORDER BY id", (os_key, self.periodo)):
-                for cod in (f["codigo"], f["codigo_prestador"]):
-                    if cod:
-                        self.idx.setdefault(self._k(cod), []).append(f)
-
-    @staticmethod
-    def _k(cod):
-        c = re.sub(r"[.\s/-]", "", str(cod or "")).upper()
-        return c.lstrip("0") or c
-
-    def buscar(self, cod, categoria=""):
-        claves = [self._k(cod)]
-        if self.os == "AVALIAN" and str(cod).startswith("02") and len(str(cod)) == 8:
-            claves.append(self._k(str(cod)[2:]))      # 02420101 → 420101
-        cand = next((self.idx[k] for k in claves if k and k in self.idx), None)
-        if not cand:
-            return None
-        recert = (categoria or "").strip().upper() == "R"
-        pref = [f for f in cand if (f["categoria"] == "R") == recert]
-        return (pref or cand)[0]
-
-    def valor(self, cod, categoria=""):
-        f = self.buscar(cod, categoria)
-        return f["valor"] if f else None
+Grilla = grillas.Grilla
 
 
 # ───────────────────────── EVWEB ─────────────────────────
