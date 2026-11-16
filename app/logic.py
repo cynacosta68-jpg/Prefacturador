@@ -696,7 +696,7 @@ def convertir_galeno(contenido, nombre, factura=""):
     ws = wb.active
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row)
-    sin = set()
+    sin, sin_esp = set(), set()
     g = lambda r, c: txt(r.get(c))  # noqa: E731
     for _, r in df.iterrows():
         cuenta = g(r, "Matricula").upper()
@@ -704,6 +704,8 @@ def convertir_galeno(contenido, nombre, factura=""):
         mp = padron.mp(p)
         if not mp:
             sin.add(cuenta)
+        if not (p and p["especialidad"]):
+            sin_esp.add(cuenta)
         hon = num(r.get("Honorario")) + num(r.get("1er_ayudante")) + num(r.get("2do_ayudante"))
         gas = num(r.get("gasto")) + num(r.get("aparatologia"))
         hg = 2 if (hon and gas) else 1 if gas else 0
@@ -719,7 +721,8 @@ def convertir_galeno(contenido, nombre, factura=""):
             int(num(r.get("cantidad"), 1) or 1),
             round(hon + gas, 2),
             ent(g(r, "numaut")),
-            1, ent(mp) if mp else None, None, hg, None, None, None, None,
+            1, ent(mp) if mp else None, None, hg, None,
+            (p["especialidad"].strip() if p and p["especialidad"] else None), None, None,
         ])
         fila = ws.max_row
         ws.cell(fila, 2).number_format = "dd/mm/yyyy;@"
@@ -730,4 +733,5 @@ def convertir_galeno(contenido, nombre, factura=""):
     sin_formulas(ws)
     out = io.BytesIO()
     wb.save(out)
-    return out.getvalue(), {"filas": len(df), "sin_mp": sorted(s for s in sin if s)}
+    return out.getvalue(), {"filas": len(df), "sin_mp": sorted(s for s in sin if s),
+                            "sin_especialidad": sorted(s for s in sin_esp if s)}

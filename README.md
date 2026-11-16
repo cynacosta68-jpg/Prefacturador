@@ -81,7 +81,7 @@ al subir y, ante un valor raro, las columnas Solapa y Fila del Excel exportado i
 anterior a la fecha de generación, `cantidad` la de la línea y el resto fijo en 0 / vacío.
 
 **Planilla GALENO** — tipo de facturación 121, N° de asociado con 10 dígitos sin barra, monto = honorario + ayudantes +
-gasto + aparatología, tipo de matrícula 1 (provincial), N° de matrícula = MP del padrón, honorarios/gastos 0-1-2.
+gasto + aparatología, tipo de matrícula 1 (provincial), N° de matrícula = MP del padrón, especialidad = la del profesional en el padrón, honorarios/gastos 0-1-2.
 La base de GALENO no trae MP: se toma la del mismo CUIT en los padrones de SANCOR / AVALIAN, o se carga en Padrón.
 
 ## Auditoría

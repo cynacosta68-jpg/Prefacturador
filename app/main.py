@@ -22,7 +22,7 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in ("1", "true",
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "40"))
 HEADLESS = os.environ.get("HEADLESS", "true").lower() in ("1", "true", "si", "yes")
 LINKS = {
-    "GALENO": os.environ.get("LINK_GALENO", "https://www.galeno.com.ar/"),
+    "GALENO": os.environ.get("LINK_GALENO", "https://webapp.galeno.com.ar/prestadores-liq-web/#/login"),
     "AVALIAN": os.environ.get("LINK_AVALIAN", "https://online.avalian.com/prestador/ingreso"),
     "SANCOR": os.environ.get("LINK_SANCOR", "https://autogestionprestadores.sancorsalud.com.ar/#/login"),
 }
@@ -783,7 +783,9 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
       factura=factura, filas=info["filas"], cuentas_sin_mp=info["sin_mp"])
     return _descarga(salida, archivo_out, {"X-Filas": str(info["filas"]),
                                            "X-Sin-MP": quote(", ".join(info["sin_mp"][:60])),
-                                           "X-Sin-MP-N": str(len(info["sin_mp"]))})
+                                           "X-Sin-MP-N": str(len(info["sin_mp"])),
+                                           "X-Sin-Esp": quote(", ".join(info.get("sin_especialidad", [])[:60])),
+                                           "X-Sin-Esp-N": str(len(info.get("sin_especialidad", [])))})
 
 
 # ───────────────────────── interfaz ─────────────────────────
