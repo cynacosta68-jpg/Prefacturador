@@ -41,8 +41,12 @@ async function api(url, opt = {}) {
   if (r.status === 401 && !url.endsWith("/login")) { mostrarLogin(); throw new Error("Sesión vencida"); }
   if (!r.ok) {
     let m = "Error " + r.status;
-    try { const j = await r.json(); m = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (e) { /* sin cuerpo */ }
-    throw new Error(m);
+    let datos = null;
+    try { datos = await r.json(); m = typeof datos.detail === "string" ? datos.detail : JSON.stringify(datos.detail); } catch (e) { /* sin cuerpo */ }
+    const err = new Error(m);
+    err.estado = r.status;
+    err.datos = datos;
+    throw err;
   }
   return opt.crudo ? r : r.json();
 }
@@ -633,6 +637,9 @@ function procesarConFuente(ids, recargar) {
       <button class="opcion" data-fuente="grilla" ${cuenta("valor_grilla") || fuera ? "" : "disabled"}>
         <b>Valor total de la grilla</b><span>${pesos(suma("valor_grilla"))}</span>
         <small>${miles(cuenta("valor_grilla"))} de ${miles(sel.length)} línea(s) en pantalla tienen valor en la grilla</small></button>
+      <button class="opcion" data-fuente="actual">
+        <b>Valor actual de la línea</b><span>${pesos(sel.reduce((t, f) => t + (f.total || 0), 0))}</span>
+        <small>Procesa cada línea con el total que muestra ahora, sin cambiarlo</small></button>
     </div>
     <p class="suave">Las líneas que no tengan valor en la fuente elegida, y las que tienen un valor cargado a mano, conservan el valor que muestran ahora.${fuera ? ` Hay ${miles(fuera)} línea(s) seleccionada(s) en otras páginas: los totales de arriba son solo de las que están en pantalla.` : ""}</p>
     <div class="pie"><button class="btn" data-cerrar>Cancelar</button></div>`);
@@ -682,18 +689,42 @@ VISTAS.prefact = async () => {
         <button class="btn primario" id="pIniciar">Comenzar a prefacturar</button>
       </div><div id="pRes"></div>
     </div><div id="lista"></div>`;
-  $("#pIniciar").onclick = async () => {
-    const a = $("#pArch").files[0]; if (!a) return toast("Elegí el archivo de prestaciones validadas", true);
+  const importar = async (a, periodo, soloNuevas) => {
     const b = $("#pIniciar"); b.disabled = true; b.setAttribute("aria-busy", "true"); b.textContent = "Cruzando…";
     try {
-      const r = await subir("/api/prefacturar", { os: S.os, periodo: $("#pPer").value }, a);
+      const r = await subir("/api/prefacturar", { os: S.os, periodo, solo_nuevas: soloNuevas ? "1" : "" }, a);
       $("#pRes").innerHTML = `<div class="aviso sinMargen ${r.sin_evweb || r.sin_padron ? "" : "ok"}">
         ${miles(r.insertadas)} línea(s) incorporadas de ${miles(r.total)} del archivo · cruce OK: ${miles(r.ok)} · sin EVWEB: ${miles(r.sin_evweb)} · sin padrón: ${miles(r.sin_padron)} · sin valor: ${miles(r.sin_valor)}
         ${r.duplicadas ? ` · ya cargadas antes (omitidas): ${miles(r.duplicadas)}` : ""}${r.anuladas ? ` · anuladas (omitidas): ${miles(r.anuladas)}` : ""}
-        ${r.grilla_periodo ? ` · grilla usada: ${r.grilla_periodo}` : " · sin grilla de valores cargada"}</div>`;
+        ${r.grilla_periodo ? ` · grilla usada: ${r.grilla_periodo}` : " · sin grilla de valores cargada"}
+        · ahora hay ${miles(r.en_prefacturacion)} línea(s) acumuladas en pre-facturación</div>`;
       contadores(); cargar();
-    } catch (err) { fallo(err); }
+    } catch (err) {
+      const dup = err.estado === 409 && err.datos && err.datos.duplicado;
+      if (!dup) fallo(err);
+      else {
+        // El archivo trae transacciones ya cargadas: no se importó nada
+        $("#pRes").innerHTML = `<div class="aviso mal sinMargen" role="alert">${esc(err.message)}</div>`;
+        modal(`<h3>Importación frenada: hay transacciones repetidas</h3>
+          <p>${esc(err.message)}</p>
+          <dl class="detalleFila">
+            <div><dt>Filas del archivo</dt><dd>${miles(dup.total)}</dd></div>
+            <div><dt>Ya cargadas</dt><dd>${miles(dup.duplicadas)}</dd></div>
+            <div><dt>Nuevas</dt><dd>${miles(dup.nuevas)}</dd></div>
+            <div><dt>Dónde están las repetidas</dt><dd>${esc(Object.entries(dup.donde).map(([k, v]) => `${miles(v)} en ${k}`).join(" · "))}</dd></div>
+            <div><dt>Ejemplos de transacciones</dt><dd>${esc(dup.ejemplos.join(", "))}</dd></div>
+          </dl>
+          <p class="suave">${dup.nuevas ? "Si es un archivo distinto que se superpone con uno anterior, podés importar solo las transacciones nuevas; las repetidas se dejan como están." : "Todas las transacciones del archivo ya estaban cargadas: no hay nada nuevo para importar."}</p>
+          <div class="pie"><button class="btn" data-cerrar>Cerrar</button>
+            ${dup.nuevas ? `<button class="btn primario" id="soloNuevas">Importar solo las ${miles(dup.nuevas)} nuevas</button>` : ""}</div>`);
+        if ($("#soloNuevas")) $("#soloNuevas").onclick = () => { cerrarModal(); importar(a, periodo, true); };
+      }
+    }
     b.disabled = false; b.removeAttribute("aria-busy"); b.textContent = "Comenzar a prefacturar";
+  };
+  $("#pIniciar").onclick = () => {
+    const a = $("#pArch").files[0]; if (!a) return toast("Elegí el archivo de prestaciones validadas", true);
+    importar(a, $("#pPer").value, false);
   };
   const cargar = () => vistaLineas("prefact", {
     vacio: "No hay líneas en pre-facturación. Subí el archivo de prestaciones validadas y presioná «Comenzar a prefacturar».",

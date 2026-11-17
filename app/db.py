@@ -95,6 +95,13 @@ CREATE TABLE IF NOT EXISTS coseguros (
     PRIMARY KEY (os, nro, cod)
 );
 
+-- Archivos validados ya importados (para reconocer cuando se sube el mismo)
+CREATE TABLE IF NOT EXISTS importaciones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    os TEXT NOT NULL, hash TEXT NOT NULL, nombre TEXT, periodo TEXT, fecha TEXT, filas INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_imp ON importaciones(os, hash);
+
 CREATE TABLE IF NOT EXISTS templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     os TEXT NOT NULL, periodo TEXT NOT NULL, nn INTEGER,

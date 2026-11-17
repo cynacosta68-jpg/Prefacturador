@@ -76,7 +76,10 @@ al subir y, ante un valor raro, las columnas Solapa y Fila del Excel exportado i
   segunda se resalta cuando difiere del total). Al **Procesar** se pregunta cuál tomar; las líneas sin valor en la
   fuente elegida, o con valor cargado a mano, conservan el que tienen.
 - Una línea solo se puede **Procesar** si tiene cuenta, profesional, código y valor.
-- Volver a subir el mismo archivo no duplica: se omiten las transacciones + código ya cargados.
+- Las líneas se acumulan entre archivos. Si un archivo trae transacciones + código ya cargados, la importación se
+  frena completa (respuesta 409) y se informa cuántas son y dónde están; el operador puede elegir importar solo las
+  nuevas. El mismo archivo se reconoce además por su huella (tabla `importaciones`).
+- Modificar una línea afecta solo a esa línea: no toca el padrón ni otras líneas del mismo profesional.
 - Al modificar cuenta o matrícula se completa el profesional desde el padrón; al cambiar código o categoría se toma el valor de la grilla (se puede desactivar en el diálogo).
 
 **Template** — hoja `ImportacionesEvweb`, 22 columnas, el mismo formato que genera SEROS: `matricula` = cuenta,

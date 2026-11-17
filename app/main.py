@@ -40,6 +40,7 @@ def _inicio():
     db.conn()
     seguridad.sembrar_admin()
     logic.completar_fechas_evweb()
+    logic.completar_valores_lineas()
     seguridad.iniciar_backups()
 
 
@@ -431,6 +432,7 @@ def valores(os: str, periodo: str, especialidad: str = "", q: str = "", tipo: st
 async def valores_importar(os: str = Form(...), periodo: str = Form(...), archivo: UploadFile = File(...), u=Auth):
     datos, nombre = await _leer(archivo)
     r = logic.importar_grilla(_os(os), periodo, datos, nombre)
+    logic.completar_valores_lineas()
     A(u, "valores.importar", _os(os), "grilla", r["periodo"], archivo=nombre, prestaciones=r["filas"],
       por_unidad=r["por_unidad"], fijas=r["fijas"], unidades=r["unidades"], solapas=r["hojas"])
     return r
@@ -654,9 +656,14 @@ def archivo_descargar(nombre: str, u=Admin):
 # ───────────────────────── pre-facturación / facturación ─────────────────────────
 
 @app.post("/api/prefacturar")
-async def prefacturar(os: str = Form(...), periodo: str = Form(...), archivo: UploadFile = File(...), u=Auth):
+async def prefacturar(os: str = Form(...), periodo: str = Form(...), solo_nuevas: str = Form(""),
+                      archivo: UploadFile = File(...), u=Auth):
     datos, nombre = await _leer(archivo)
-    r = logic.prefacturar(_os(os), periodo, datos, nombre)
+    try:
+        r = logic.prefacturar(_os(os), periodo, datos, nombre, solo_nuevas == "1")
+    except logic.ArchivoDuplicado as e:
+        A(u, "prefacturacion.frenada_por_duplicados", _os(os), "prefacturacion", periodo, archivo=nombre, **e.info)
+        return JSONResponse({"detail": str(e), "duplicado": e.info}, status_code=409)
     A(u, "prefacturacion.iniciar", _os(os), "prefacturacion", periodo, archivo=nombre, **r)
     return r
 

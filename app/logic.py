@@ -511,14 +511,46 @@ def guardar_coseguros(os_key, filas, periodo=""):
     return len(datos)
 
 
-def prefacturar(os_key, periodo, contenido, nombre):
+class ArchivoDuplicado(Exception):
+    """El archivo trae transacciones que ya estaban cargadas: la importación se frena."""
+
+    def __init__(self, mensaje, info):
+        super().__init__(mensaje)
+        self.info = info
+
+
+def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
     """Cruza el archivo validado con lo extraído de EVWEB por número de
-    transacción, completa profesional desde el padrón y valoriza."""
+    transacción, completa profesional desde el padrón y valoriza.
+
+    Las líneas se acumulan con las que ya están en pre-facturación. Si el archivo trae
+    transacciones ya cargadas, no se importa nada (salvo que se pida importar solo las nuevas)."""
     periodo = validar_periodo(periodo)
     parser, claves = PARSERS[os_key]
     filas, anuladas = parser(leer_tabla(contenido, nombre, claves=claves))
     if not filas:
         raise ValueError("El archivo no tiene filas para procesar.")
+
+    huella = hashlib.sha256(contenido).hexdigest()
+    previa = db.q1("SELECT nombre, fecha FROM importaciones WHERE os=? AND hash=? ORDER BY id DESC", (os_key, huella))
+    existentes = {}
+    for r in db.q("SELECT nro_transaccion, cod_practica, estado FROM lineas WHERE os=?", (os_key,)):
+        existentes[(r["nro_transaccion"], r["cod_practica"])] = r["estado"]
+    repetidas = [f for f in filas if (f["claves"][0], f["cod"]) in existentes]
+    if repetidas and not solo_nuevas:
+        donde = {"prefact": "Pre-facturación", "facturacion": "Facturación", "template": "un template"}
+        por_estado = {}
+        for f in repetidas:
+            e = donde[existentes[(f["claves"][0], f["cod"])]]
+            por_estado[e] = por_estado.get(e, 0) + 1
+        nuevas_n = len(filas) - len(repetidas)
+        motivo = (f"Este archivo ya fue importado el {previa['fecha']}." if previa and not nuevas_n
+                  else f"El archivo trae {len(repetidas)} transacción(es) que ya estaban cargadas.")
+        raise ArchivoDuplicado(
+            motivo + " No se importó nada.",
+            {"duplicadas": len(repetidas), "nuevas": nuevas_n, "total": len(filas),
+             "ya_importado": previa["fecha"] if previa else None, "donde": por_estado,
+             "ejemplos": [f["claves"][0] for f in repetidas[:8]]})
     guardar_coseguros(os_key, filas, periodo)
 
     ev = {}
@@ -589,7 +621,10 @@ def prefacturar(os_key, periodo, contenido, nombre):
             "total,origen_valor,cruce,observacion,creado,valor_archivo,valor_grilla) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             nuevas)
+        c.execute("INSERT INTO importaciones(os,hash,nombre,periodo,fecha,filas) VALUES (?,?,?,?,?,?)",
+                  (os_key, huella, nombre, periodo, ahora, len(nuevas)))
     res["insertadas"] = len(nuevas)
+    res["en_prefacturacion"] = db.scalar("SELECT COUNT(*) FROM lineas WHERE os=? AND estado='prefact'", (os_key,))
     return res
 
 
@@ -645,6 +680,30 @@ def editar_linea(lid, cambios, autocompletar=False):
     final = db.q1("SELECT * FROM lineas WHERE id=?", (lid,))
     final["_cambios"] = {k: {"antes": lin[k], "despues": final[k]} for k in campos if lin[k] != final[k]}
     return final
+
+
+def completar_valores_lineas():
+    """Líneas cargadas antes de guardar por separado el valor del archivo y el de la grilla:
+    se reconstruyen para que al procesar se pueda elegir la fuente."""
+    with db.tx() as c:
+        c.execute("UPDATE lineas SET valor_archivo=valor_unit WHERE valor_archivo IS NULL AND valor_unit>0 "
+                  "AND origen_valor='archivo validado'")
+        c.execute("UPDATE lineas SET valor_grilla=valor_unit WHERE valor_grilla IS NULL AND valor_unit>0 "
+                  "AND origen_valor LIKE 'grilla%'")
+    pend = db.q("SELECT id, os, periodo, cod_practica, categoria FROM lineas WHERE valor_grilla IS NULL "
+                "AND estado IN ('prefact','facturacion')")
+    grillas, cambios = {}, []
+    for l in pend:
+        k = (l["os"], l["periodo"])
+        if k not in grillas:
+            grillas[k] = Grilla(*k)
+        v = grillas[k].valor(l["cod_practica"], l["categoria"])
+        if v:
+            cambios.append((v, l["id"]))
+    if cambios:
+        with db.tx() as c:
+            c.executemany("UPDATE lineas SET valor_grilla=? WHERE id=?", cambios)
+    return len(cambios)
 
 
 def aplicar_fuente(lin, fuente):
