@@ -438,6 +438,7 @@ def parse_reporte(df):
     c_desc, c_cant = c("Prestación Denominación", "prestación_denominación", "denominación"), c("Cantidad", "cantidad")
     c_cop, c_cuit = c("Copago", "copago"), c("Cuit Efector", "efector_cuit")
     c_mat, c_nom = c("Matricula Efector", "efector_matricula"), c("Efector Razón Social", "efector_razón_social")
+    c_efe = _col(df, "Código de Prestador Efector") or ("efector" if "efector" in df.columns else None)
     if not c_cod or not c_cuit:
         raise ValueError("El archivo de SWISS MEDICAL no tiene las columnas «Código de prestación» y «Cuit Efector».")
     from .logic import fecha_ddmmaaaa, limpiar_id, num, txt
@@ -461,6 +462,7 @@ def parse_reporte(df):
             fecha=fecha, afiliado_numero=txt(r[c_cred]) if c_cred else "", afiliado_nombre=txt(r[c_afil]) if c_afil else "",
             cod=txt(r[c_cod]), desc=txt(r[c_desc]) if c_desc else "", cant=num(r[c_cant], 1) if c_cant else 1,
             importe=None, prof_nombre=txt(r[c_nom]) if c_nom else "", prof_mp=txt(r[c_mat]) if c_mat else "",
+            prof_efector=limpiar_id(r[c_efe]) if c_efe else "",
             prof_cuit=re.sub(r"\D", "", txt(r[c_cuit]).split(".")[0]), condicion_iva=txt(r[c_iva]) if c_iva else "",
             copago=num(r[c_cop]) if c_cop else 0.0))
     return out, repetidas

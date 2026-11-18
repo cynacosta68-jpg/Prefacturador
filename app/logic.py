@@ -246,6 +246,7 @@ class Padron:
     def __init__(self, os_key):
         self.filas = db.q("SELECT * FROM profesionales WHERE os=?", (os_key,))
         self.por_nombre, self.por_cuenta, self.por_mp, self.por_cuit = {}, {}, {}, {}
+        self.por_efector = {}      # código de prestador efector (SWISS): para quienes facturan por una sociedad
         for f in self.filas:
             self.por_nombre.setdefault(f["nombre_norm"], f)
             if f["cuenta"]:
@@ -254,6 +255,8 @@ class Padron:
                 self.por_mp.setdefault(f["matricula"], f)
             if f["cuit"]:
                 self.por_cuit.setdefault(f["cuit"], f)
+            if (f.get("efector") or "").strip("0 "):
+                self.por_efector.setdefault(f["efector"].strip(), f)
         self._tokens = [(set(f["nombre_norm"].split()), f) for f in self.filas]
         self._cache = {}
         # MP de otras obras sociales (la base de GALENO no trae matrícula provincial)
@@ -695,12 +698,15 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False, modo="evw
         e = None if por_grilla else next((ev[c] for c in f["claves"] if c and c in ev), None)
         prof, obs = None, []
         por_cuit = padron.por_cuit.get(f.get("prof_cuit", "")) if swiss and f.get("prof_cuit") else None
+        if swiss and not por_cuit and f.get("prof_efector"):     # no está por CUIT: se busca por código de efector
+            por_cuit = padron.por_efector.get(f["prof_efector"])
         if por_grilla:
             # Proceso del repositorio de SWISS: el profesional sale del CUIT del efector
             prof = por_cuit
             cruce = "GRILLA" if prof else "SIN PADRON"
             if not prof:
-                obs.append(f"CUIT del efector {f.get('prof_cuit') or 'vacío'} no está en el padrón")
+                obs.append(f"El efector {f.get('prof_nombre') or ''} (CUIT {f.get('prof_cuit') or 'vacío'}, código de efector "
+                           f"{f.get('prof_efector') or 'vacío'}) no está en el padrón ni por CUIT ni por código de efector")
         elif e:
             if e["cuenta"]:
                 prof = padron.por_cuenta.get(e["cuenta"].upper())
@@ -761,7 +767,9 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False, modo="evw
         nuevas.append((
             os_key, periodo, "prefact", nro, f["fecha"], f["afiliado_numero"], f["afiliado_nombre"],
             f["cod"], f["desc"], f["cant"],
-            prof["cuenta"] if prof else "", padron.mp(prof) or (f["prof_mp"] if not prof else ""),
+            # cuenta, matrícula, especialidad y categoría salen siempre del padrón; si el profesional no
+            # está en el padrón quedan vacías (la matrícula del archivo no se usa)
+            prof["cuenta"] if prof else "", padron.mp(prof) if prof else "",
             prof["nombre"] if prof else (e["profesional"] if e else f["prof_nombre"]),
             prof["cuit"] if prof else "", esp, cat, vu, round(vu * f["cant"], 2), origen, cruce,
             " · ".join(obs), ahora, v_arch, v or None, iva, os_codigo,

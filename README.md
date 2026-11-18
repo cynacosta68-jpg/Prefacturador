@@ -96,7 +96,9 @@ La base de GALENO no trae MP: se toma la del mismo CUIT en los padrones de SANCO
 El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-facturación lo valoriza.
 
 - **Bot EVWEB**: extrae primero el código 11062 (I.V.A.) y después el 11060, y acumula ambos en «Datos extraídos».
-- **Padrón**: el profesional se busca por el **CUIT del efector**. De ahí salen cuenta, especialidad, categoría,
+- **Padrón**: el profesional se busca por el **CUIT del efector**; si ese CUIT no está, por el **código de efector**
+  (columna «Efector» del padrón = «Código de Prestador Efector» del reporte), que es como se asignan los
+  profesionales que facturan a través de una sociedad. De ahí salen cuenta, especialidad, categoría,
   el IVA del template y el código de obra social (11062 si es Responsable Inscripto, 11060 si no).
 - **Valores**: acepta la grilla de Swiss (Excel con una solapa por especialidad) o la base estructurada del
   proceso anterior (solapas Nomenclador, unidades y Valor Fijos).
