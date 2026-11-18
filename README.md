@@ -132,6 +132,9 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
   no está en «Otros», usa la grilla. Cuando reemplaza un valor de la grilla, la línea lo deja anotado. Para un valor nuevo se agrega otra fila con la nueva
   vigencia. Se puede agregar, editar, importar y exportar en Excel (columnas Código, Descripción, Vigencia,
   Valor, Valor R). Vale para todas las obras sociales.
+  Cada fila puede llevar una **especialidad**: ese valor rige solo para los profesionales de esa especialidad y
+  manda sobre la fila general del mismo código (por ejemplo, 18010318 vale distinto para Imágenes que para
+  Cardiología). La columna «Especialidad» del Excel es opcional.
 - **Código 29010230** (Polisomnografía sin CPAP): figura en dos solapas; se usa el valor de Neurología.
 - **Código propuesto** (SWISS): la línea conserva el código del archivo validado («Cód. archivo») y al lado muestra
   el «Cód. propuesto» por la aplicación, con la leyenda «Difieren cód.» o «Coinciden códigos» (se puede filtrar
@@ -142,14 +145,18 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
   código del archivo o el propuesto. La consulta de Pediatría hecha por una especialidad infantil se valoriza
   como consulta de pediatra.
 - **Revalorizar seleccionadas** (Pre-facturación y Facturación): con las líneas elegidas —o todas las filtradas—
-  se puede (a) volver a valorizar con lo cargado ahora (categoría y especialidad del padrón, grilla y «Otros»),
-  útil después de corregir el padrón o los valores; (b) asignar un mismo valor unitario a todas; o (c) aplicar
+  se puede (a) revalorizar automáticamente **según grilla** (categoría y especialidad del padrón, grilla y «Otros»,
+  útil después de corregir el padrón o los valores) o **según EVWEB** (además vuelve a buscar cada transacción en
+  los datos extraídos de EVWEB, toma de ahí el profesional y actualiza el cruce); (b) asignar un mismo valor unitario a todas; o (c) aplicar
   un incremento % sobre el valor de cada una. Informa cuántas cambiaron y el importe antes y después.
 - **Muchas filas**: las tablas se muestran de a 200, 500 (por defecto) o 1.500 filas; «todas» solo aparece si hay
   hasta 2.000. La casilla de la cabecera y «Seleccionar las filtradas» seleccionan todas las líneas que cumplen
   el filtro, también las de otras páginas, y las acciones masivas actúan sobre todas ellas. La base de datos
   cuenta, suma y pagina, y las respuestas viajan comprimidas.
 - **Filtro «Valor unitario»**: Todos / Sin valor / Con valor.
+- **Borrar valores en bloque**: en Valores, tanto en la solapa «Valores» (prestaciones de la grilla) como en «Otros»,
+  se tildan las filas —o la casilla de la cabecera para todas las de la página— y «Eliminar seleccionadas».
+  Pide confirmación y deja en la auditoría lo que se borró.
 - **Incremento %**: al modificar una línea (o varias a la vez) en Pre-facturación o Facturación se puede indicar
   un porcentaje sobre el valor unitario (negativo = descuento). Queda anotado en el origen del valor, en la
   observación de la línea y en la auditoría.

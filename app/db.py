@@ -152,6 +152,9 @@ def conn():
             _conn.execute("ALTER TABLE lineas ADD COLUMN cod_propuesto TEXT")
             _conn.execute("ALTER TABLE lineas ADD COLUMN desc_propuesta TEXT")
             _conn.execute("UPDATE lineas SET cod_propuesto=cod_practica")
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(otros_valores)").fetchall()]
+        if "especialidad" not in cols:   # valor propio para una especialidad (vacío = todas)
+            _conn.execute("ALTER TABLE otros_valores ADD COLUMN especialidad TEXT DEFAULT ''")
         cols = [r[1] for r in _conn.execute("PRAGMA table_info(profesionales)").fetchall()]
         if "codigo_iva" not in cols:     # código de IVA: depende de la responsabilidad fiscal (Responsable Inscripto = 1)
             _conn.execute("ALTER TABLE profesionales ADD COLUMN efector TEXT")

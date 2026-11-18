@@ -442,9 +442,10 @@ VISTAS.valores = async () => {
       <label>Tipo de valor<select id="fTipo">${opc("", "Todos", F.tipo)}${opc("unidad", "Por unidad", F.tipo)}${opc("fijo", "Fijo", F.tipo)}</select></label>
       <label>Buscar<input id="q" value="${esc(F.q || "")}" placeholder="Código o descripción"></label>
       ${F.unidad ? `<button class="btn" id="uQuitar">Quitar filtro de unidad</button>` : ""}
+      <button class="btn peligro" id="vElim" disabled>Eliminar seleccionadas</button>
       ${paginador(d.total)}
     </div>
-    ${tabla(cols, d.filas, { vacio: "Sin prestaciones para ese filtro.", acciones: f => f.tipo_valor === "fijo" ? `<button class="btn mini" data-fijo="${f.id}">Cambiar valor</button>` : "" })}`}
+    ${tabla(cols, d.filas, { sel: true, vacio: "Sin prestaciones para ese filtro.", acciones: f => f.tipo_valor === "fijo" ? `<button class="btn mini" data-fijo="${f.id}">Cambiar valor</button>` : "" })}`}
     </div>
 ` : `<div class="tabla"><div class="vacio">Todavía no hay grillas cargadas para esta obra social. Subí el Excel de la grilla tal como lo entrega la obra social.</div></div>`}`;
 
@@ -471,31 +472,34 @@ VISTAS.valores = async () => {
       try { const r = await api("/api/valores/copiar", { json: { os: S.os, origen: per, destino } }); cerrarModal(); toast(`Período ${destino} creado con ${miles(r.prestaciones)} prestaciones`); S.filtros = { periodo: destino }; contadores(); recargar(); } catch (err) { fallo(err); }
     };
   };
-  $$("[data-tab]").forEach(b => b.onclick = () => { F.tab = b.dataset.tab; F.unidad = ""; S.pagina = 0; recargar(); });
+  $$("[data-tab]").forEach(b => b.onclick = () => { F.tab = b.dataset.tab; F.unidad = ""; S.pagina = 0; S.sel.clear(); recargar(); });
   // Solapa «Otros»: valores cargados a mano para prestaciones que la grilla no trae
   if (F.tab === "otros") {
     const { filas: otros } = await api("/api/otros?os=" + S.os);
     const monto = v => v ? pesos(v) : `<span class="et mal">completar</span>`;
     $("#gCuerpo").innerHTML = `
       <div class="barra">
-        <span class="suave">Valores cargados a mano: mandan sobre la grilla. Sirven para prestaciones que la grilla no trae y para corregir un valor sin tocarla. El valor rige desde la vigencia indicada; para un valor nuevo agregá otra fila con la nueva vigencia. La categoría R usa «Valor R» si está cargado.</span>
+        <span class="suave">Valores cargados a mano: mandan sobre la grilla. Sirven para prestaciones que la grilla no trae y para corregir un valor sin tocarla. El valor rige desde la vigencia indicada; para un valor nuevo agregá otra fila con la nueva vigencia. Si el valor depende de la especialidad del profesional, cargá una fila por especialidad. La categoría R usa «Valor R» si está cargado.</span>
         <span class="sep"></span>
+        <button class="btn peligro" id="oElim" disabled>Eliminar seleccionadas</button>
         <button class="btn primario" id="oNuevo">+ Agregar</button>
         <label class="btn">Importar Excel<input type="file" id="oArch" accept=".xlsx,.xls,.csv" class="oculto"></label>
         <a class="btn" href="/api/otros/exportar?os=${S.os}">Exportar Excel</a>
       </div>
       ${tabla([
         { k: "codigo", t: "Código", f: x => `<b>${esc(x.codigo)}</b>` }, { k: "descripcion", t: "Descripción" },
+        { k: "especialidad", t: "Especialidad", f: x => x.especialidad ? esc(x.especialidad) : `<span class="suave">todas</span>` },
         { k: "vigencia", t: "Vigencia desde" },
         { k: "valor", t: "Valor · todas las categorías", num: true, f: x => monto(x.valor) },
         { k: "valor_r", t: "Valor · categoría R", num: true, f: x => x.valor_r ? pesos(x.valor_r) : `<span class="suave">igual al general</span>` },
-      ], otros, { vacio: "Todavía no hay valores cargados a mano.", acciones: x => `<button class="btn mini" data-otro="${x.id}">Editar</button>` })}`;
+      ], otros, { sel: true, vacio: "Todavía no hay valores cargados a mano.", acciones: x => `<button class="btn mini" data-otro="${x.id}">Editar</button>` })}`;
     const formOtro = x => {
       const v = n => n ? String(n).replace(".", ",") : "";
       modal(`<h3>${x ? "Editar valor" : "Agregar valor"}</h3><form id="fo"><div class="rejilla">
         <label>Código de prestación<input name="codigo" value="${esc(x ? x.codigo : "")}" required></label>
         <label>Vigencia desde (MMAAAA)<input name="vigencia" value="${esc(x ? x.vigencia : (per || periodoPorDefecto()))}" maxlength="6" required pattern="(0[1-9]|1[0-2])[0-9]{4}"></label>
         <label>Descripción<input name="descripcion" value="${esc(x ? x.descripcion || "" : "")}"></label>
+        <label>Especialidad (vacío = todas; escribila como figura en el padrón)<input name="especialidad" value="${esc(x ? x.especialidad || "" : "")}" placeholder="Ej: CARDIOLOGIA"></label>
         <label>Valor · todas las categorías<input name="valor" value="${esc(x ? v(x.valor) : "")}" inputmode="decimal"></label>
         <label>Valor · categoría R (vacío = igual al general)<input name="valor_r" value="${esc(x ? v(x.valor_r) : "")}" inputmode="decimal"></label></div>
         <div class="pie">${x ? `<button type="button" class="btn peligro" id="oBorrar">Eliminar</button>` : ""}<span class="sep"></span>
@@ -509,6 +513,12 @@ VISTAS.valores = async () => {
         if (!await confirmar(`¿Eliminar el valor del código ${x.codigo} (vigencia ${x.vigencia})?`, "Eliminar", "peligro")) return;
         try { await api("/api/otros/" + x.id, { method: "DELETE" }); cerrarModal(); recargar(); } catch (err) { fallo(err); }
       };
+    };
+    // Selección y borrado en bloque
+    enlazarSeleccion(() => { $("#oElim").disabled = S.sel.size === 0; $("#oElim").textContent = S.sel.size ? `Eliminar ${miles(S.sel.size)} seleccionada(s)` : "Eliminar seleccionadas"; });
+    $("#oElim").onclick = async () => {
+      if (!await confirmar(`¿Eliminar ${miles(S.sel.size)} valor(es) de «Otros»? Queda registrado en la auditoría.`, "Eliminar", "peligro")) return;
+      try { const r = await api("/api/otros/eliminar", { json: { os: S.os, ids: [...S.sel] } }); S.sel.clear(); toast(`${miles(r.eliminadas)} valor(es) eliminados`); recargar(); } catch (err) { fallo(err); }
     };
     $("#oNuevo").onclick = () => formOtro(null);
     $$("[data-otro]").forEach(b => b.onclick = () => formOtro(otros.find(x => x.id === +b.dataset.otro)));
@@ -524,6 +534,14 @@ VISTAS.valores = async () => {
   if ($("#fTipo")) $("#fTipo").onchange = e => { F.tipo = e.target.value; S.pagina = 0; recargar(); };
   if ($("#q")) $("#q").oninput = conDemora(e => { F.q = e.target.value; S.pagina = 0; VISTAS.valores().then(() => { const i = $("#q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }).catch(fallo); });
   if ($("#uQuitar")) $("#uQuitar").onclick = () => { F.unidad = ""; S.pagina = 0; recargar(); };
+  // Selección y borrado en bloque de prestaciones de la grilla
+  if ($("#vElim")) {
+    enlazarSeleccion(() => { $("#vElim").disabled = S.sel.size === 0; $("#vElim").textContent = S.sel.size ? `Eliminar ${miles(S.sel.size)} seleccionada(s)` : "Eliminar seleccionadas"; });
+    $("#vElim").onclick = async () => {
+      if (!await confirmar(`¿Eliminar ${miles(S.sel.size)} prestación(es) de la grilla del período ${per}? Las líneas que usen esos códigos quedarán sin valor de grilla. Queda registrado en la auditoría.`, "Eliminar", "peligro")) return;
+      try { const r = await api("/api/valores/eliminar", { json: { os: S.os, ids: [...S.sel] } }); S.sel.clear(); toast(`${miles(r.eliminadas)} prestación(es) eliminadas`); contadores(); recargar(); } catch (err) { fallo(err); }
+    };
+  }
   $$("[data-ver]").forEach(b => b.onclick = () => { F.unidad = b.dataset.ver; F.esp = ""; F.tab = "prest"; S.pagina = 0; recargar(); });
   const aNum = t => Number(String(t).trim().replace(/\./g, "").replace(",", "."));
   $$("[data-uid]").forEach(i => {
@@ -848,28 +866,35 @@ async function vistaLineas(estado, cfg) {
   if ($("#mReval")) $("#mReval").onclick = () => {
     const n = S.sel.size;
     modal(`<h3>Revalorizar ${miles(n)} línea(s) seleccionada(s)</h3>
-      <div class="opciones">
-        <button class="opcion" id="rvGrilla"><b>Volver a valorizar</b><small>Recalcula cada línea con lo cargado ahora: categoría y especialidad del padrón, grilla de valores y «Otros». Reemplaza también los valores puestos a mano.</small></button>
+      <h4 class="sinMargen">1 · Revalorizar automáticamente</h4>
+      <p class="suave">Recalcula cada línea con lo que está cargado ahora y reemplaza también los valores puestos a mano.</p>
+      <div class="fila">
+        <button type="button" class="btn primario" data-rv="grilla">Revalorizar según grilla</button>
+        <button type="button" class="btn primario" data-rv="evweb">Revalorizar según EVWEB</button>
       </div>
+      <p class="suave"><b>Según grilla</b>: toma categoría y especialidad del padrón y el valor de la grilla y de «Otros». <b>Según EVWEB</b>: además vuelve a buscar cada transacción en los datos extraídos de EVWEB, toma de ahí el profesional (cuenta, matrícula, especialidad y categoría del padrón) y actualiza el cruce.</p>
+      <h4>2 · O asignar un valor a mano</h4>
       <form id="frv"><div class="rejilla">
         <label>Asignar este valor unitario a todas<input name="valor_unit" inputmode="decimal" placeholder="Ej: 42680,25"></label>
         <label>O aplicar un incremento % sobre el valor de cada una<input name="incremento" inputmode="decimal" placeholder="Ej: 20 (negativo = descuento)"></label></div>
         <p class="suave">Completá uno solo de los dos campos. El total de cada línea se recalcula con su cantidad. Queda registrado en la auditoría.</p>
         <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Aplicar valor</button></div></form>`);
-    $("#rvGrilla").onclick = async () => {
+    $$("[data-rv]").forEach(b => b.onclick = async () => {
+      const modo = b.dataset.rv;
       cerrarModal();
       try {
-        const r = await api("/api/lineas/accion", { json: { os: S.os, accion: "revalorizar", ids: [...S.sel] } });
+        const r = await api("/api/lineas/accion", { json: { os: S.os, accion: "revalorizar", modo, ids: [...S.sel] } });
         contadores(); recargar();
-        modal(`<h3>Revalorización terminada</h3>
+        modal(`<h3>Revalorización ${modo === "evweb" ? "según EVWEB" : "según grilla"} terminada</h3>
           <dl class="detalleFila">
+            ${modo === "evweb" ? `<div><dt>Resultado del cruce</dt><dd>${esc(Object.entries(r.por_cruce).map(([k, v]) => `${k}: ${miles(v)}`).join(" · "))}</dd></div>` : ""}
             <div><dt>Revalorizadas</dt><dd>${miles(r.hechas)}</dd></div><div><dt>Con cambios</dt><dd>${miles(r.cambiaron)}</dd></div>
             <div><dt>Sin cambios</dt><dd>${miles(r.sin_cambio)}</dd></div><div><dt>Sin valor (no se tocaron)</dt><dd>${miles(r.n_omitidas)}</dd></div>
             <div><dt>Importe de las que cambiaron</dt><dd>${pesos(r.importe_antes)} → ${pesos(r.importe_despues)}</dd></div>
           </dl>
           <div class="pie"><button class="btn primario" data-cerrar>Cerrar</button></div>`);
       } catch (err) { fallo(err); }
-    };
+    });
     $("#frv").onsubmit = async e => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(e.target)), v = String(d.valor_unit).trim(), inc = String(d.incremento).trim();

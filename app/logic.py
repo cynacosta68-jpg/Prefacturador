@@ -318,8 +318,9 @@ def _clave_cod(cod):
     return c.lstrip("0") or c
 
 
-def valor_otros(os_key, cod, periodo, categoria=""):
+def valor_otros(os_key, cod, periodo, categoria="", especialidad=""):
     """Valor de la solapa «Otros» para un código: la vigencia más reciente que no supere el período.
+    Si hay filas para la especialidad del profesional mandan sobre las generales (sin especialidad).
     Categoría R usa «valor R» si está cargado. Devuelve (valor, vigencia) o (None, '')."""
     k = _clave_cod(cod)
     if not k:
@@ -328,10 +329,13 @@ def valor_otros(os_key, cod, periodo, categoria=""):
     clave = lambda p: (p[2:], p[:2])  # noqa: E731
     vigentes = sorted((f for f in filas if not periodo or clave(f["vigencia"]) <= clave(periodo)),
                       key=lambda f: clave(f["vigencia"]), reverse=True)
-    for f in vigentes:
+    esp = norm(especialidad)
+    propias = [f for f in vigentes if esp and norm(f.get("especialidad")) == esp]
+    generales = [f for f in vigentes if not norm(f.get("especialidad"))]
+    for f in propias + generales:
         v = f["valor_r"] if (str(categoria or "").strip().upper() == "R" and f["valor_r"]) else f["valor"]
         if v:
-            return v, f["vigencia"]
+            return v, f["vigencia"] + (f" · {f['especialidad'].strip()}" if norm(f.get("especialidad")) else "")
     return None, ""
 
 
@@ -348,25 +352,30 @@ def guardar_otro(os_key, d, oid=None):
         if n < 0:
             raise ValueError("El valor no puede ser negativo.")
         return round(n, 2) or None
-    vals = (cod, txt(d.get("descripcion"))[:300], vig, monto(d.get("valor")), monto(d.get("valor_r")))
-    otro = db.q1("SELECT id FROM otros_valores WHERE os=? AND codigo=? AND vigencia=? AND id<>?", (os_key, cod, vig, oid or 0))
+    esp = txt(d.get("especialidad"))[:120]
+    vals = (cod, txt(d.get("descripcion"))[:300], vig, monto(d.get("valor")), monto(d.get("valor_r")), esp)
+    otro = next((f for f in db.q("SELECT id, especialidad FROM otros_valores WHERE os=? AND codigo=? AND vigencia=? AND id<>?",
+                                 (os_key, cod, vig, oid or 0)) if norm(f["especialidad"]) == norm(esp)), None)
     if otro:
-        raise ValueError(f"Ya hay un valor cargado para el código {cod} con vigencia {vig}.")
+        raise ValueError(f"Ya hay un valor cargado para el código {cod} con vigencia {vig}"
+                         + (f" y especialidad {esp}." if esp else " para todas las especialidades."))
     with db.tx() as c:
         if oid:
-            c.execute("UPDATE otros_valores SET codigo=?, descripcion=?, vigencia=?, valor=?, valor_r=? WHERE id=? AND os=?",
+            c.execute("UPDATE otros_valores SET codigo=?, descripcion=?, vigencia=?, valor=?, valor_r=?, especialidad=? WHERE id=? AND os=?",
                       vals + (oid, os_key))
         else:
-            oid = c.execute("INSERT INTO otros_valores(codigo,descripcion,vigencia,valor,valor_r,os) VALUES (?,?,?,?,?,?)",
+            oid = c.execute("INSERT INTO otros_valores(codigo,descripcion,vigencia,valor,valor_r,especialidad,os) VALUES (?,?,?,?,?,?,?)",
                             vals + (os_key,)).lastrowid
     return db.q1("SELECT * FROM otros_valores WHERE id=?", (oid,))
 
 
 def importar_otros(os_key, contenido, nombre):
-    """Excel con columnas Código, Descripción, Vigencia (MMAAAA), Valor y Valor R. Actualiza o agrega por código + vigencia."""
+    """Excel con columnas Código, Descripción, Especialidad (opcional), Vigencia (MMAAAA), Valor y Valor R.
+    Actualiza o agrega por código + vigencia + especialidad."""
     df = leer_tabla(contenido, nombre, claves=["Código", "Codigo", "Vigencia"])
     c_cod, c_desc, c_vig = col(df, "Código", "Codigo"), col(df, "Descripción", "Descripcion", "Prestación"), col(df, "Vigencia")
     c_r = col(df, "Valor R", "Valor recertificado", parcial=False)
+    c_esp = col(df, "Especialidad", parcial=False)
     c_val = col(df, "Valor", "Valor todas las categorías", parcial=False) or next(
         (c for c in df.columns if norm(c).startswith("valor") and c != c_r), None)
     if not c_cod or not c_vig or not c_val:
@@ -377,8 +386,9 @@ def importar_otros(os_key, contenido, nombre):
         if not cod:
             continue
         d = dict(codigo=cod, descripcion=txt(r[c_desc]) if c_desc else "", vigencia=limpiar_id(r[c_vig]).zfill(6),
-                 valor=r[c_val], valor_r=r[c_r] if c_r else None)
-        ya = db.q1("SELECT id FROM otros_valores WHERE os=? AND codigo=? AND vigencia=?", (os_key, cod, d["vigencia"]))
+                 valor=r[c_val], valor_r=r[c_r] if c_r else None, especialidad=txt(r[c_esp]) if c_esp else "")
+        ya = next((f for f in db.q("SELECT id, especialidad FROM otros_valores WHERE os=? AND codigo=? AND vigencia=?",
+                                   (os_key, cod, d["vigencia"])) if norm(f["especialidad"]) == norm(d["especialidad"])), None)
         guardar_otro(os_key, d, ya["id"] if ya else None)
         nuevos, actualizados = nuevos + (not ya), actualizados + bool(ya)
     return {"nuevos": nuevos, "actualizados": actualizados}
@@ -742,7 +752,7 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False, modo="evw
             v = grilla.valor(f["cod"], cat)
         # «Otros» (valores cargados a mano) manda sobre la grilla: sirve para los códigos que la grilla
         # no trae y para corregir un valor de la grilla sin tocarla.
-        ko = (_clave_cod(cod_val), per_valor if swiss else periodo, cat)
+        ko = (_clave_cod(cod_val), per_valor if swiss else periodo, cat, esp)
         if ko not in cache_otros:
             cache_otros[ko] = valor_otros(os_key, *ko)
         vo, vig = cache_otros[ko]
@@ -846,7 +856,7 @@ def editar_linea(lid, cambios, autocompletar=False, ctx=None):
                                                      nuevo.get("desc_propuesta") or nuevo.get("descripcion") or "")[0]
             else:
                 v = g.valor(cod_val, nuevo["categoria"])
-            v = valor_otros(lin["os"], cod_val, nuevo["periodo"], nuevo["categoria"])[0] or v
+            v = valor_otros(lin["os"], cod_val, nuevo["periodo"], nuevo["categoria"], nuevo["especialidad"])[0] or v
             nuevo["valor_grilla"] = v or None            # la columna Valor grilla sigue al código y la categoría
             if v and "valor_unit" not in cambios and (cambio_cod or not lin["valor_unit"]):
                 nuevo["valor_unit"], nuevo["origen_valor"] = v, f"grilla {g.periodo}"
@@ -907,11 +917,31 @@ class Revalorizador:
     def __init__(self, os_key):
         self.os, self.padron, self.grillas = os_key, Padron(os_key), {}
         self.vz = smg.Valorizadores(os_key) if os_key == "SWISS" else None
+        self._ev = None
 
-    def linea(self, lin):
-        """Devuelve (línea nueva, cambios) o (None, motivo) si no se pudo valorizar."""
+    def evweb(self, nro):
+        if self._ev is None:      # se carga una sola vez, solo si se pide el cruce con EVWEB
+            self._ev = {}
+            for f in db.q("SELECT nro, profesional, cuenta FROM evweb_filas WHERE os=? AND nro<>''", (self.os,)):
+                self._ev.setdefault(f["nro"], f)
+        return self._ev.get(nro)
+
+    def linea(self, lin, modo="grilla"):
+        """Devuelve (línea nueva, cambios) o (None, motivo) si no se pudo valorizar.
+        modo «evweb»: además vuelve a buscar la transacción en lo extraído de EVWEB y toma de ahí el profesional."""
         nuevo = dict(lin)
-        prof = (self.padron.por_cuit.get(re.sub(r"\D", "", lin["cuit"] or "")) if lin["cuit"] else None) \
+        prof = None
+        if modo == "evweb":
+            e = self.evweb(lin["nro_transaccion"])
+            if not e:
+                nuevo["cruce"] = "SIN EVWEB"
+            else:
+                prof = (self.padron.por_cuenta.get(e["cuenta"].upper()) if e["cuenta"] else None) \
+                    or self.padron.buscar_nombre(e["profesional"])
+                nuevo["cruce"] = "OK" if prof else "SIN PADRON"
+                if prof:
+                    nuevo.update(cuenta=prof["cuenta"], matricula=self.padron.mp(prof), profesional=prof["nombre"], cuit=prof["cuit"])
+        prof = prof or (self.padron.por_cuit.get(re.sub(r"\D", "", lin["cuit"] or "")) if lin["cuit"] else None) \
             or (self.padron.por_cuenta.get((lin["cuenta"] or "").upper()) if lin["cuenta"] else None)
         if prof:
             nuevo.update(especialidad=prof["especialidad"], categoria=prof["categoria"], resp_fiscal=prof["resp_fiscal"])
@@ -927,13 +957,14 @@ class Revalorizador:
                 self.grillas[lin["periodo"]] = Grilla(self.os, lin["periodo"])
             g = self.grillas[lin["periodo"]]
             v, origen = g.valor(cod, nuevo["categoria"]), f"grilla {g.periodo}"
-        vo, vig = valor_otros(self.os, cod, per, nuevo["categoria"])
+        vo, vig = valor_otros(self.os, cod, per, nuevo["categoria"], nuevo["especialidad"])
         if vo:
             v, origen = vo, f"Valores · Otros (vigencia {vig})"
-        if not v:
+        if v:
+            nuevo.update(valor_unit=v, valor_grilla=v, origen_valor=origen, total=round(v * (lin["cantidad"] or 1), 2))
+        elif modo != "evweb" or nuevo["cruce"] == lin["cruce"]:
             return None, "sin valor en la grilla ni en Otros"
-        nuevo.update(valor_unit=v, valor_grilla=v, origen_valor=origen, total=round(v * (lin["cantidad"] or 1), 2))
-        campos = ("especialidad", "categoria", "resp_fiscal", "cod_propuesto", "desc_propuesta", "valor_unit",
+        campos = ("cruce", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria", "resp_fiscal", "cod_propuesto", "desc_propuesta", "valor_unit",
                   "valor_grilla", "origen_valor", "total")
         return nuevo, {k: {"antes": lin[k], "despues": nuevo[k]} for k in campos if lin[k] != nuevo[k]}
 

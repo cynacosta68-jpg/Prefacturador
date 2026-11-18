@@ -570,7 +570,7 @@ async def valor_editar(vid: int, request: Request, u=Auth):
 
 @app.get("/api/otros")
 def otros(os: str, u=Auth):
-    filas = db.q("SELECT * FROM otros_valores WHERE os=? ORDER BY codigo, substr(vigencia,3)||substr(vigencia,1,2) DESC", (_os(os),))
+    filas = db.q("SELECT * FROM otros_valores WHERE os=? ORDER BY codigo, COALESCE(especialidad,''), substr(vigencia,3)||substr(vigencia,1,2) DESC", (_os(os),))
     return {"filas": filas}
 
 
@@ -578,7 +578,7 @@ def otros(os: str, u=Auth):
 async def otros_alta(request: Request, u=Auth):
     d = await request.json()
     r = logic.guardar_otro(_os(d.get("os")), d)
-    A(u, "valores.otros_alta", r["os"], "otro_valor", r["id"], **{k: r[k] for k in ("codigo", "descripcion", "vigencia", "valor", "valor_r")})
+    A(u, "valores.otros_alta", r["os"], "otro_valor", r["id"], **{k: r[k] for k in ("codigo", "descripcion", "especialidad", "vigencia", "valor", "valor_r")})
     return r
 
 
@@ -590,7 +590,7 @@ async def otros_editar(oid: int, request: Request, u=Auth):
         raise HTTPException(404, "Valor inexistente.")
     r = logic.guardar_otro(antes["os"], d, oid)
     A(u, "valores.otros_modificar", r["os"], "otro_valor", oid, codigo=r["codigo"],
-      cambios={k: {"antes": antes[k], "despues": r[k]} for k in ("codigo", "descripcion", "vigencia", "valor", "valor_r") if antes[k] != r[k]})
+      cambios={k: {"antes": antes[k], "despues": r[k]} for k in ("codigo", "descripcion", "especialidad", "vigencia", "valor", "valor_r") if antes[k] != r[k]})
     return r
 
 
@@ -605,6 +605,34 @@ def otros_baja(oid: int, u=Auth):
     return {"ok": True}
 
 
+def _borrar_en_bloque(u, tabla, accion, d):
+    """Elimina las filas elegidas de una tabla de valores y deja en la auditoría lo que se borró."""
+    os_key, ids = _os(d.get("os")), [int(i) for i in d.get("ids", [])]
+    if not ids:
+        raise ValueError("No hay filas seleccionadas.")
+    borradas = []
+    with db.tx() as c:
+        for bloque in (ids[i:i + 500] for i in range(0, len(ids), 500)):
+            marcas = ",".join("?" * len(bloque))
+            borradas += [dict(r) for r in c.execute(f"SELECT * FROM {tabla} WHERE os=? AND id IN ({marcas})", [os_key] + bloque).fetchall()]
+            c.execute(f"DELETE FROM {tabla} WHERE os=? AND id IN ({marcas})", [os_key] + bloque)
+    campos = ("codigo", "descripcion", "especialidad", "categoria", "periodo", "vigencia", "valor", "valor_r")
+    for i in range(0, len(borradas), 500):
+        A(u, accion, os_key, tabla, None, cantidad=len(borradas), parte=i // 500 + 1,
+          filas=[{k: f[k] for k in campos if f.get(k) not in (None, "")} for f in borradas[i:i + 500]])
+    return {"eliminadas": len(borradas)}
+
+
+@app.post("/api/otros/eliminar")
+async def otros_eliminar(request: Request, u=Auth):
+    return _borrar_en_bloque(u, "otros_valores", "valores.otros_baja_masiva", await request.json())
+
+
+@app.post("/api/valores/eliminar")
+async def valores_eliminar(request: Request, u=Auth):
+    return _borrar_en_bloque(u, "valores", "valores.baja_masiva", await request.json())
+
+
 @app.post("/api/otros/importar")
 async def otros_importar(os: str = Form(...), archivo: UploadFile = File(...), u=Auth):
     datos, nombre = await _leer(archivo)
@@ -615,9 +643,10 @@ async def otros_importar(os: str = Form(...), archivo: UploadFile = File(...), u
 
 @app.get("/api/otros/exportar")
 def otros_exportar(os: str, u=Auth):
-    df = pd.DataFrame(db.q("SELECT codigo 'Código', descripcion 'Descripción', vigencia 'Vigencia', valor 'Valor', "
-                           "valor_r 'Valor R' FROM otros_valores WHERE os=? ORDER BY codigo", (_os(os),)),
-                      columns=["Código", "Descripción", "Vigencia", "Valor", "Valor R"])
+    df = pd.DataFrame(db.q("SELECT codigo 'Código', descripcion 'Descripción', COALESCE(especialidad,'') 'Especialidad', "
+                           "vigencia 'Vigencia', valor 'Valor', valor_r 'Valor R' FROM otros_valores WHERE os=? "
+                           "ORDER BY codigo, 3", (_os(os),)),
+                      columns=["Código", "Descripción", "Especialidad", "Vigencia", "Valor", "Valor R"])
     A(u, "valores.otros_exportar", _os(os), "otro_valor", None, filas=len(df))
     return _descarga(logic.df_a_xlsx(df, "Otros"), f"Otros_valores_{_os(os)}.xlsx")
 
@@ -1031,12 +1060,18 @@ async def lineas_accion(request: Request, u=Auth):
                                       **({"iva_antes": f["iva"]} if accion == "iva" else {})})
     if accion == "revalorizar":   # vuelve a valorizar con el padrón, la grilla y «Otros» actuales
         rv, sin_cambio = logic.Revalorizador(os_key), 0
+        modo = "evweb" if d.get("modo") == "evweb" else "grilla"
+        if modo == "evweb" and not db.scalar("SELECT COUNT(*) FROM evweb_filas WHERE os=?", (os_key,)):
+            raise ValueError("No hay datos extraídos de EVWEB para esta obra social. Corré el bot o importá la extracción.")
+        por_cruce = {}
         for bloque in (ids[i:i + 500] for i in range(0, len(ids), 500)):
             filas = db.q(f"SELECT * FROM lineas WHERE os=? AND estado IN ('prefact','facturacion') AND id IN ({','.join('?' * len(bloque))})",
                          [os_key] + bloque)
             with db.tx() as c:
                 for f in filas:
-                    nuevo, cambios = rv.linea(f)
+                    nuevo, cambios = rv.linea(f, modo)
+                    if nuevo is not None:
+                        por_cruce[nuevo["cruce"]] = por_cruce.get(nuevo["cruce"], 0) + 1
                     if nuevo is None:
                         omitidas.append({"id": f["id"], "nro": f["nro_transaccion"], "faltan": [cambios]})
                         continue
@@ -1048,9 +1083,10 @@ async def lineas_accion(request: Request, u=Auth):
                               [nuevo[k] for k in cambios] + [f["id"]])
                     afectadas.append({"id": f["id"], "transaccion": f["nro_transaccion"], "cambios": cambios})
         for i in range(0, len(afectadas), 500):
-            A(u, "lineas.revalorizar", os_key, "linea", None, cantidad=len(afectadas), parte=i // 500 + 1,
+            A(u, "lineas.revalorizar", os_key, "linea", None, cantidad=len(afectadas), parte=i // 500 + 1, segun=modo,
               lineas=afectadas[i:i + 500])
         return {"hechas": hechas, "omitidas": omitidas[:50], "n_omitidas": len(omitidas), "cambiaron": len(afectadas),
+                "modo": modo, "por_cruce": por_cruce,
                 "sin_cambio": sin_cambio, "importe_antes": round(sum(a["cambios"]["total"]["antes"] or 0 for a in afectadas if "total" in a["cambios"]), 2),
                 "importe_despues": round(sum(a["cambios"]["total"]["despues"] or 0 for a in afectadas if "total" in a["cambios"]), 2)}
     if accion == "editar":   # edición masiva: mismos cambios a todas las seleccionadas
