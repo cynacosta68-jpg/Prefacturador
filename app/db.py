@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS lineas (
     template_id INTEGER, creado TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_lin ON lineas(os, estado, periodo);
+CREATE INDEX IF NOT EXISTS ix_lin_id ON lineas(os, estado, id);
 
 CREATE TABLE IF NOT EXISTS usuarios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -22,7 +22,7 @@ const NOMBRES = { AVALIAN: "AVALIAN", SANCOR: "SANCOR", GALENO: "GALENO", SWISS:
 
 const S = {
   os: null, sec: "padron",
-  me: null, sel: new Set(), filas: [], pagina: 0, limite: 1500, filtros: {}, pollBot: null,
+  me: null, sel: new Set(), filas: [], pagina: 0, limite: 500, filtros: {}, pollBot: null,
 };
 
 function periodoPorDefecto() {
@@ -210,7 +210,7 @@ function tabla(cols, filas, opt = {}) {
   return `<div class="tabla"><table><thead><tr>${opt.sel ? `<th><input type="checkbox" id="selTodo"></th>` : ""}${th}${opt.acciones ? "<th></th>" : ""}</tr></thead><tbody>${tr}</tbody></table></div>`;
 }
 
-function enlazarSeleccion(alCambiar) {
+function enlazarSeleccion(alCambiar, opt = {}) {
   const todo = $("#selTodo");
   const cajas = $$("tbody input[type=checkbox][data-id]");
   const refrescar = () => {
@@ -219,18 +219,36 @@ function enlazarSeleccion(alCambiar) {
     alCambiar();
   };
   cajas.forEach(c => c.onchange = () => { const id = +c.dataset.id; c.checked ? S.sel.add(id) : S.sel.delete(id); refrescar(); });
-  if (todo) todo.onchange = () => { cajas.forEach(c => { c.checked = todo.checked; const id = +c.dataset.id; todo.checked ? S.sel.add(id) : S.sel.delete(id); }); refrescar(); };
+  // La casilla de la cabecera selecciona TODAS las filas que cumplen el filtro (también las de otras páginas)
+  // cuando la vista sabe traer sus ids; si no, solo las de la página.
+  if (todo) todo.onchange = async () => {
+    const marcar = todo.checked;
+    if (opt.traerIds && opt.total > cajas.length) {
+      todo.disabled = true;
+      try {
+        if (marcar) { const ids = await opt.traerIds(); S.sel.clear(); ids.forEach(i => S.sel.add(i)); toast(`${miles(ids.length)} línea(s) seleccionada(s): todas las que cumplen el filtro`); }
+        else S.sel.clear();
+      } catch (err) { fallo(err); }
+      todo.disabled = false;
+      cajas.forEach(c => { c.checked = S.sel.has(+c.dataset.id); });
+    } else cajas.forEach(c => { c.checked = marcar; const id = +c.dataset.id; marcar ? S.sel.add(id) : S.sel.delete(id); });
+    refrescar();
+  };
   refrescar();
+  return () => { cajas.forEach(c => { c.checked = S.sel.has(+c.dataset.id); }); refrescar(); };
 }
 
+const MAX_TODAS = 2000;
 function paginador(total) {
+  if (S.limite === 0 && total > MAX_TODAS) S.limite = 500;
   const lim = S.limite;
   const pags = lim > 0 ? Math.max(1, Math.ceil(total / lim)) : 1;
   if (S.pagina >= pags) S.pagina = pags - 1;
   const desde = lim > 0 ? S.pagina * lim + 1 : 1;
   const hasta = lim > 0 ? Math.min(total, (S.pagina + 1) * lim) : total;
-  return `<label>Ver<select id="pLim"><option value="1500" ${lim === 1500 ? "selected" : ""}>de a 1500 filas</option>
-    <option value="0" ${lim === 0 ? "selected" : ""}>todas</option></select></label>
+  // «todas» solo se ofrece con pocas filas: dibujar miles de filas juntas cuelga el navegador
+  return `<label>Ver<select id="pLim">${[200, 500, 1500].map(n => `<option value="${n}" ${lim === n ? "selected" : ""}>de a ${n} filas</option>`).join("")}
+    ${total <= MAX_TODAS ? `<option value="0" ${lim === 0 ? "selected" : ""}>todas</option>` : ""}</select></label>
     ${lim > 0 && pags > 1 ? `<button class="btn" id="pAnt" ${S.pagina === 0 ? "disabled" : ""} aria-label="Página anterior">${ICO.izq}</button>
     <span class="suave">${miles(desde)}–${miles(hasta)} de ${miles(total)}</span>
     <button class="btn" id="pSig" ${S.pagina >= pags - 1 ? "disabled" : ""} aria-label="Página siguiente">${ICO.der}</button>` : `<span class="suave">${miles(total)} filas</span>`}`;
@@ -784,7 +802,7 @@ function procesarConFuente(ids, recargar) {
 
 async function vistaLineas(estado, cfg) {
   const F = S.filtros;
-  const par = { os: S.os, estado, periodo: F.periodo || "", q: F.q || "", cruce: F.cruce || "", prof: F.prof || "", nro: F.nro || "", rf: F.rf || "", afil: F.afil || "", cods: F.cods || "" };
+  const par = { os: S.os, estado, periodo: F.periodo || "", q: F.q || "", cruce: F.cruce || "", prof: F.prof || "", nro: F.nro || "", rf: F.rf || "", afil: F.afil || "", cods: F.cods || "", valor: F.valor || "" };
   const conIva = estado !== "template";
   const opcCond = (lista, sel) => lista.map(c => `<option value="${esc(c)}" ${c === sel ? "selected" : ""}>${c === "-" ? "Sin dato" : esc(c)}</option>`).join("");
   const d = await api("/api/lineas?" + qs({ ...par, limite: S.limite, desde: S.pagina * S.limite }));
@@ -801,6 +819,7 @@ async function vistaLineas(estado, cfg) {
       ${estado === "prefact" ? `<label>Cruce<select id="fCru"><option value="">Todos</option>${["OK", ...(S.os === "SWISS" ? ["GRILLA"] : []), "MANUAL", "SIN EVWEB", "SIN PADRON"].map(c => `<option ${c === F.cruce ? "selected" : ""}>${c}</option>`).join("")}</select></label>` : ""}
       ${d.cond_prof.some(c => c !== "-") ? `<label>Condición del profesional<select id="fRf"><option value="">Todas</option>${opcCond(d.cond_prof, F.rf)}</select></label>` : ""}
       ${d.cond_afil.some(c => c !== "-") ? `<label>Condición del afiliado<select id="fAfil"><option value="">Todas</option>${opcCond(d.cond_afil, F.afil)}</select></label>` : ""}
+      <label>Valor unitario<select id="fValor"><option value="">Todos</option><option value="sin" ${F.valor === "sin" ? "selected" : ""}>Sin valor (${miles(d.sin_valor)})</option><option value="con" ${F.valor === "con" ? "selected" : ""}>Con valor</option></select></label>
       ${d.difieren || F.cods ? `<label>Códigos<select id="fCods"><option value="">Todos</option><option value="difieren" ${F.cods === "difieren" ? "selected" : ""}>Difieren cód. (${miles(d.difieren)})</option><option value="coinciden" ${F.cods === "coinciden" ? "selected" : ""}>Coinciden códigos</option></select></label>` : ""}
       ${filtrosBusqueda(F, d.profesionales)}
       ${paginador(d.total)}<span class="sep"></span>
@@ -808,7 +827,6 @@ async function vistaLineas(estado, cfg) {
       <a class="btn" href="/api/lineas/exportar?${qs(par)}">Exportar Excel</a>
     </div>
     ${tabla([...COLS_LINEA.slice(0, -1),
-      ...(S.os === "SWISS" ? [{ k: "os_codigo", t: "Cód. OS" }] : []),
       { k: "resp_fiscal", t: "Cond. profesional" },
       ...(d.cond_afil.some(c => c !== "-") ? [{ k: "cond_afiliado", t: "Cond. afiliado" }] : []),
       { k: "iva", t: "IVA", f: f => f.iva === null || f.iva === undefined ? "" : `<span class="et ${f.iva ? "ok" : ""}">${esc(f.iva)}</span>` },
@@ -817,12 +835,13 @@ async function vistaLineas(estado, cfg) {
   if ($("#fRf")) $("#fRf").onchange = e => { F.rf = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fAfil")) $("#fAfil").onchange = e => { F.afil = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fCods")) $("#fCods").onchange = e => { F.cods = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
+  $("#fValor").onchange = e => { F.valor = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   // Selección masiva: todas las líneas que cumplen los filtros, no solo las de la página
   if ($("#selFiltradas")) $("#selFiltradas").onclick = async () => {
     try {
-      const r = await api("/api/lineas?" + qs({ ...par, solo_ids: 1 }));
-      S.sel.clear(); r.ids.forEach(i => S.sel.add(i));
-      toast(`${miles(r.ids.length)} línea(s) seleccionada(s)`); recargar();
+      const ids = await traerIds();
+      S.sel.clear(); ids.forEach(i => S.sel.add(i));
+      toast(`${miles(ids.length)} línea(s) seleccionada(s)`); repintarSeleccion();   // sin volver a dibujar la tabla
     } catch (err) { fallo(err); }
   };
   // Revalorización en bloque: volver a valorizar, asignar un valor o aplicar un incremento
@@ -874,7 +893,9 @@ async function vistaLineas(estado, cfg) {
   $("#fPer").onchange = e => { F.periodo = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fCru")) $("#fCru").onchange = e => { F.cruce = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   enlazarBusqueda(F, () => vistaLineas(estado, cfg));
-  enlazarSeleccion(() => { $("#nSel").textContent = miles(S.sel.size); $$("[data-masiva]").forEach(b => b.disabled = S.sel.size === 0); });
+  const traerIds = async () => (await api("/api/lineas?" + qs({ ...par, solo_ids: 1 }))).ids;
+  const repintarSeleccion = enlazarSeleccion(() => { $("#nSel").textContent = miles(S.sel.size); $$("[data-masiva]").forEach(b => b.disabled = S.sel.size === 0); },
+    { total: d.total, traerIds });
   const fila = id => d.filas.find(f => f.id === +id);
   $$("[data-editar]").forEach(b => b.onclick = () => editarLinea(fila(b.dataset.editar), recargar));
   $$("[data-eliminar]").forEach(b => b.onclick = async () => { if (await confirmar("¿Eliminar esta línea?", "Eliminar", "peligro")) accion("eliminar", [+b.dataset.eliminar], recargar, "eliminada(s)"); });

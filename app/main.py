@@ -10,6 +10,7 @@ from datetime import datetime, date
 from urllib.parse import quote
 
 import pandas as pd
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +32,7 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 app = FastAPI(title="Facturación Obras Sociales", docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(GZipMiddleware, minimum_size=2000)      # las tablas viajan comprimidas
 JOBS = {}
 _bot_lock = threading.Lock()
 _intentos = {}
@@ -759,13 +761,13 @@ async def evweb_importar(os: str = Form(...), archivo: UploadFile = File(...), u
 
 @app.get("/api/evweb")
 def evweb(os: str, q: str = "", fdesde: str = "", fhasta: str = "", prof: str = "", nro: str = "",
-          limite: int = 1500, desde: int = 0, u=Auth):
+          limite: int = 500, desde: int = 0, u=Auth):
     os_key = _os(os)
-    regs = logic.evweb_filas(os_key, q, fdesde, fhasta, prof, nro)
+    regs, total = logic.evweb_filas(os_key, q, fdesde, fhasta, prof, nro, limite, desde, contar=True)
     cols = list(dict.fromkeys(k for r in regs[:300] for k in r))
     ext = db.q("SELECT * FROM evweb_extracciones WHERE os=? ORDER BY id DESC LIMIT 30", (os_key,))
     rango = db.q1("SELECT MIN(NULLIF(fecha,'')) d, MAX(fecha) h, COUNT(*) n FROM evweb_filas WHERE os=?", (os_key,))
-    return {"total": len(regs), "columnas": cols, "filas": regs[desde:desde + limite] if limite > 0 else regs,
+    return {"total": total, "columnas": cols, "filas": regs,
             "extracciones": ext, "profesionales": logic.opciones_profesional("evweb_filas", os_key),
             "rango": rango, "archivar_hasta": archivo.periodo_a_archivar()}
 
@@ -848,8 +850,15 @@ def evweb_quitar(os: str, u=Auth):
     return r
 
 
-def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", afil="", cods=""):
-    sql, par = "SELECT * FROM lineas WHERE os=? AND estado=?", [os_key, estado]
+_LISTA_SQL = ("COALESCE(cuenta,'')<>'' AND COALESCE(profesional,'')<>'' AND COALESCE(cod_practica,'')<>'' "
+              "AND COALESCE(valor_unit,0)>0")        # misma regla que logic.validar_para_procesar
+
+
+def _lineas_sql(os_key, estado, periodo="", cruce="", prof="", nro="", rf="", afil="", cods="", valor=""):
+    """Condición SQL (desde «FROM lineas …») y parámetros de los filtros de líneas."""
+    sql, par = " FROM lineas WHERE os=? AND estado=?", [os_key, estado]
+    if valor:       # «sin» / «con» valor unitario
+        sql += " AND COALESCE(valor_unit,0)" + ("<=0" if valor == "sin" else ">0")
     if cods:        # «difieren» / «coinciden»: código propuesto contra el del archivo
         sql += " AND " + ("" if cods == "difieren" else "NOT ") + \
             "(COALESCE(cod_propuesto,'')<>'' AND LTRIM(cod_propuesto,'0')<>LTRIM(cod_practica,'0'))"
@@ -870,7 +879,12 @@ def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", 
     if cruce:
         sql += " AND cruce=?"
         par.append(cruce)
-    filas = db.q(sql + " ORDER BY id", par)
+    return sql, par
+
+
+def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", afil="", cods="", valor=""):
+    sql, par = _lineas_sql(os_key, estado, periodo, cruce, prof, nro, rf, afil, cods, valor)
+    filas = db.q("SELECT *" + sql + " ORDER BY id", par)
     if q:
         b = logic.norm(q)
         filas = [f for f in filas if b in logic.norm(" ".join(str(f[k] or "") for k in (
@@ -881,21 +895,33 @@ def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", 
 
 @app.get("/api/lineas")
 def lineas(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "", nro: str = "",
-           rf: str = "", afil: str = "", cods: str = "", limite: int = 1500, desde: int = 0, solo_ids: int = 0, u=Auth):
+           rf: str = "", afil: str = "", cods: str = "", valor: str = "", limite: int = 500, desde: int = 0,
+           solo_ids: int = 0, u=Auth):
     os_key = _os(os)
     if estado not in ("prefact", "facturacion", "template"):
         raise HTTPException(400, "Estado inválido.")
-    filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro, rf, afil, cods)
-    for f in filas:
+    if q.strip():       # el texto libre ignora tildes y mayúsculas: se filtra en memoria
+        filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro, rf, afil, cods, valor)
+        if solo_ids:
+            return {"ids": [f["id"] for f in filas]}
+        total, importe = len(filas), round(sum(f["total"] or 0 for f in filas), 2)
+        listas = sum(1 for f in filas if not logic.validar_para_procesar(f))
+        tramo = filas[desde:desde + limite] if limite > 0 else filas
+    else:               # sin texto libre: cuenta, suma y pagina la base de datos (rápido con muchas filas)
+        sql, par = _lineas_sql(os_key, estado, periodo, cruce, prof, nro, rf, afil, cods, valor)
+        if solo_ids:    # para «Seleccionar todas las filtradas»
+            return {"ids": [r["id"] for r in db.q("SELECT id" + sql + " ORDER BY id", par)]}
+        t = db.q1(f"SELECT COUNT(*) n, COALESCE(SUM(total),0) imp, COALESCE(SUM(CASE WHEN {_LISTA_SQL} THEN 1 ELSE 0 END),0) ok" + sql, par)
+        total, importe, listas = t["n"], round(t["imp"], 2), t["ok"]
+        tramo = db.q("SELECT *" + sql + " ORDER BY id" + (" LIMIT ? OFFSET ?" if limite > 0 else ""),
+                     par + ([limite, max(0, desde)] if limite > 0 else []))
+    for f in tramo:
         f["codigos"] = "Difieren cód." if logic.codigos_difieren(f) else "Coinciden códigos"
-    if solo_ids:    # para «Seleccionar todas las filtradas»
-        return {"ids": [f["id"] for f in filas]}
     cond = lambda campo: [r["v"] or "-" for r in db.q(  # noqa: E731
         f"SELECT DISTINCT COALESCE({campo},'') v FROM lineas WHERE os=? AND estado=? ORDER BY 1", (os_key, estado))]
     pers = [r["periodo"] for r in db.q("SELECT DISTINCT periodo FROM lineas WHERE os=? AND estado=?", (os_key, estado))]
-    tramo = filas[desde:desde + limite] if limite > 0 else filas
-    return {"total": len(filas), "importe": round(sum(f["total"] or 0 for f in filas), 2),
-            "listas": sum(1 for f in filas if not logic.validar_para_procesar(f)),
+    return {"total": total, "importe": importe, "listas": listas,
+            "sin_valor": db.scalar("SELECT COUNT(*) FROM lineas WHERE os=? AND estado=? AND COALESCE(valor_unit,0)<=0", (os_key, estado)),
             "periodos": sorted(pers, key=lambda p: (p[2:], p[:2]), reverse=True), "filas": tramo,
             "profesionales": logic.opciones_profesional("lineas", os_key, "AND estado=?", (estado,)),
             "cond_prof": cond("resp_fiscal"), "cond_afil": cond("cond_afiliado"),
@@ -921,12 +947,12 @@ async def lineas_resumen(request: Request, u=Auth):
 
 @app.get("/api/lineas/exportar")
 def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "",
-                    nro: str = "", rf: str = "", afil: str = "", cods: str = "", u=Auth):
-    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro, rf, afil, cods)
+                    nro: str = "", rf: str = "", afil: str = "", cods: str = "", valor: str = "", u=Auth):
+    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro, rf, afil, cods, valor)
     cols = ["periodo", "nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
             "cod_propuesto", "codigos", "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
             "valor_unit", "total", "valor_archivo", "valor_grilla", "total_archivo", "total_grilla", "origen_valor",
-            "cruce", "observacion", "resp_fiscal", "cond_afiliado", "iva"] + (["os_codigo"] if _os(os) == "SWISS" else [])
+            "cruce", "observacion", "resp_fiscal", "cond_afiliado", "iva"]
     for f in filas:
         f["codigos"] = "Difieren cód." if logic.codigos_difieren(f) else "Coinciden códigos"
         f["total_archivo"] = round(f["valor_archivo"] * (f["cantidad"] or 1), 2) if f["valor_archivo"] else None
@@ -1028,10 +1054,10 @@ async def lineas_accion(request: Request, u=Auth):
                 "sin_cambio": sin_cambio, "importe_antes": round(sum(a["cambios"]["total"]["antes"] or 0 for a in afectadas if "total" in a["cambios"]), 2),
                 "importe_despues": round(sum(a["cambios"]["total"]["despues"] or 0 for a in afectadas if "total" in a["cambios"]), 2)}
     if accion == "editar":   # edición masiva: mismos cambios a todas las seleccionadas
-        hechas = 0
+        hechas, ctx = 0, {}
         for i in ids:
             try:
-                r = logic.editar_linea(i, d.get("cambios", {}), True)
+                r = logic.editar_linea(i, d.get("cambios", {}), True, ctx)
                 hechas += 1
                 afectadas.append({"id": i, "transaccion": r["nro_transaccion"], "cambios": r["_cambios"]})
             except ValueError as e:

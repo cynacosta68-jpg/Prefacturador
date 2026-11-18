@@ -497,8 +497,10 @@ def opciones_profesional(tabla, os_key, extra="", params=()):
     return [f"{f['cuenta'] or '(sin cuenta)'} - {f['profesional']}" for f in filas]
 
 
-def evweb_filas(os_key, busqueda="", desde="", hasta="", prof="", nro=""):
-    sql, par = "SELECT data FROM evweb_filas WHERE os=?", [os_key]
+def evweb_filas(os_key, busqueda="", desde="", hasta="", prof="", nro="", limite=0, inicio=0, contar=False):
+    """Filas extraídas de EVWEB. Con `contar` devuelve (filas de la página, total): si no hay texto libre,
+    la base de datos cuenta y pagina, sin leer todas las filas."""
+    sql, par = " FROM evweb_filas WHERE os=?", [os_key]
     if desde:
         sql += " AND fecha>=?"
         par.append(desde)
@@ -509,10 +511,18 @@ def evweb_filas(os_key, busqueda="", desde="", hasta="", prof="", nro=""):
         sql += " AND nro LIKE ?"
         par.append(f"%{limpiar_id(nro)}%")
     cond, p2 = filtro_profesional(prof)
-    regs = [json.loads(f["data"]) for f in db.q(sql + cond + " ORDER BY fecha DESC, id DESC", par + p2)]
+    sql, par = sql + cond, par + p2
+    orden = " ORDER BY fecha DESC, id DESC"
+    if contar and not busqueda and limite > 0:
+        total = db.scalar("SELECT COUNT(*)" + sql, par)
+        return [json.loads(f["data"]) for f in db.q("SELECT data" + sql + orden + " LIMIT ? OFFSET ?",
+                                                    par + [limite, max(0, inicio)])], total
+    regs = [json.loads(f["data"]) for f in db.q("SELECT data" + sql + orden, par)]
     if busqueda:
         b = norm(busqueda)
         regs = [r for r in regs if b in norm(" ".join(r.values()))]
+    if contar:
+        return (regs[inicio:inicio + limite] if limite > 0 else regs), len(regs)
     return regs
 
 
@@ -775,7 +785,10 @@ CAMPOS_EDITABLES = ["nro_transaccion", "fecha_prestacion", "afiliado_numero", "a
                     "categoria", "valor_unit", "observacion", "periodo"]
 
 
-def editar_linea(lid, cambios, autocompletar=False):
+def editar_linea(lid, cambios, autocompletar=False, ctx=None):
+    """`ctx` es un diccionario que comparte padrón, grillas y valorizador entre muchas ediciones
+    seguidas (edición masiva), para no volver a cargarlos en cada línea."""
+    ctx = {} if ctx is None else ctx
     lin = db.q1("SELECT * FROM lineas WHERE id=?", (lid,))
     if not lin:
         raise ValueError("Línea inexistente.")
@@ -791,7 +804,7 @@ def editar_linea(lid, cambios, autocompletar=False):
     if incremento and not (-100 < incremento <= 500):
         raise ValueError("El incremento debe ser un porcentaje entre -100 y 500.")
     if autocompletar:
-        padron = Padron(lin["os"])
+        padron = ctx.get("padron") or ctx.setdefault("padron", Padron(lin["os"]))
         prof = None
         if nuevo["cuenta"] and nuevo["cuenta"] != lin["cuenta"]:
             prof = padron.por_cuenta.get(nuevo["cuenta"].upper())
@@ -817,9 +830,10 @@ def editar_linea(lid, cambios, autocompletar=False):
                 nuevo["cod_propuesto"], nuevo["desc_propuesta"] = nuevo["cod_practica"], ""
         cod_val = nuevo.get("cod_propuesto") or nuevo["cod_practica"]
         if cambio_cod or lin.get("valor_grilla") is None or cambio_esp:
-            g = Grilla(lin["os"], nuevo["periodo"])
+            kg = ("grilla", nuevo["periodo"])
+            g = ctx.get(kg) or ctx.setdefault(kg, Grilla(lin["os"], nuevo["periodo"]))
             if lin["os"] == "SWISS":
-                v = smg.Valorizadores("SWISS").valor(nuevo["fecha_prestacion"], cod_val, nuevo["categoria"],
+                v = (ctx.get("vz") or ctx.setdefault("vz", smg.Valorizadores("SWISS"))).valor(nuevo["fecha_prestacion"], cod_val, nuevo["categoria"],
                                                      nuevo["especialidad"], nuevo["periodo"],
                                                      nuevo.get("desc_propuesta") or nuevo.get("descripcion") or "")[0]
             else:

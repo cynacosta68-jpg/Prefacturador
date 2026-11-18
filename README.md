@@ -143,6 +143,11 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
   se puede (a) volver a valorizar con lo cargado ahora (categoría y especialidad del padrón, grilla y «Otros»),
   útil después de corregir el padrón o los valores; (b) asignar un mismo valor unitario a todas; o (c) aplicar
   un incremento % sobre el valor de cada una. Informa cuántas cambiaron y el importe antes y después.
+- **Muchas filas**: las tablas se muestran de a 200, 500 (por defecto) o 1.500 filas; «todas» solo aparece si hay
+  hasta 2.000. La casilla de la cabecera y «Seleccionar las filtradas» seleccionan todas las líneas que cumplen
+  el filtro, también las de otras páginas, y las acciones masivas actúan sobre todas ellas. La base de datos
+  cuenta, suma y pagina, y las respuestas viajan comprimidas.
+- **Filtro «Valor unitario»**: Todos / Sin valor / Con valor.
 - **Incremento %**: al modificar una línea (o varias a la vez) en Pre-facturación o Facturación se puede indicar
   un porcentaje sobre el valor unitario (negativo = descuento). Queda anotado en el origen del valor, en la
   observación de la línea y en la auditoría.
