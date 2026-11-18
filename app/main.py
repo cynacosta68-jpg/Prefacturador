@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import archivo, db, logic, seguridad
+from . import arca, archivo, db, logic, seguridad
 from .seguridad import auditar
 from .evweb_bot import ejecutar_extractor, generar_rangos_9_dias
 
@@ -22,6 +22,7 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in ("1", "true",
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "40"))
 HEADLESS = os.environ.get("HEADLESS", "true").lower() in ("1", "true", "si", "yes")
 LINKS = {
+    "SWISS": os.environ.get("LINK_SWISS", ""),
     "GALENO": os.environ.get("LINK_GALENO", "https://webapp.galeno.com.ar/prestadores-liq-web/#/login"),
     "AVALIAN": os.environ.get("LINK_AVALIAN", "https://online.avalian.com/prestador/ingreso"),
     "SANCOR": os.environ.get("LINK_SANCOR", "https://autogestionprestadores.sancorsalud.com.ar/#/login"),
@@ -307,12 +308,97 @@ def resumen(os: str, u=Auth):
 
 @app.get("/api/padron")
 def padron(os: str, q: str = "", u=Auth):
-    filas = db.q("SELECT id,cuenta,nombre,cuit,especialidad,categoria,resp_fiscal,matricula FROM profesionales "
-                 "WHERE os=? ORDER BY nombre", (_os(os),))
+    filas = db.q("SELECT id,cuenta,nombre,cuit,especialidad,categoria,resp_fiscal,matricula,efector,codigo_iva "
+                 "FROM profesionales WHERE os=? ORDER BY nombre", (_os(os),))
     if q:
         b = logic.norm(q)
         filas = [f for f in filas if b in logic.norm(" ".join(str(v or "") for v in f.values()))]
-    return {"filas": filas}
+    return {"filas": filas, "arca": arca.configurado()}
+
+
+ARCA_JOBS = {}      # obra social → estado de la última actualización desde ARCA
+
+
+def _run_arca(os_key, quien):
+    """Consulta en ARCA la condición fiscal de cada profesional del padrón y actualiza los que cambiaron."""
+    job = ARCA_JOBS[os_key]
+    try:
+        profs = db.q("SELECT id, nombre, cuit, resp_fiscal FROM profesionales WHERE os=? ORDER BY nombre", (os_key,))
+        por_cuit = {}
+        for p in profs:
+            c = re.sub(r"\D", "", p["cuit"] or "")
+            if len(c) == 11:
+                por_cuit.setdefault(c, []).append(p)
+            else:
+                job["sin_cuit"] += 1
+        job["total"] = len(por_cuit)
+        fallas_seguidas = 0
+        for cuit, lista in por_cuit.items():
+            try:
+                r = arca.consultar(cuit)
+                fallas_seguidas = 0
+            except arca.ArcaError as e:
+                job["errores"].append({"cuit": cuit, "profesional": lista[0]["nombre"], "motivo": str(e)})
+                fallas_seguidas = 0 if e.estado == 404 else fallas_seguidas + 1
+                if fallas_seguidas >= 5:      # Arcanum caído o clave mala: no tiene sentido seguir
+                    raise ValueError(f"Se interrumpió: {e}")
+                job["hechos"] += 1
+                continue
+            nueva = r["resp_fiscal"]
+            if not nueva:
+                job["sin_datos"].append({"cuit": cuit, "profesional": lista[0]["nombre"],
+                                         "motivo": r["observacion"] or "la constancia no informa la condición frente al IVA"})
+            else:
+                for p in lista:
+                    if logic.norm(p["resp_fiscal"]) != logic.norm(nueva):
+                        with db.tx() as c:
+                            c.execute("UPDATE profesionales SET resp_fiscal=?, codigo_iva=? WHERE id=?",
+                                      (nueva, logic.codigo_iva(nueva), p["id"]))
+                        job["cambios"].append({"cuit": cuit, "profesional": p["nombre"], "antes": p["resp_fiscal"] or "",
+                                               "despues": nueva, "codigo_iva": logic.codigo_iva(nueva)})
+            job["hechos"] += 1
+        job["estado"] = "terminado"
+    except Exception as e:
+        job["estado"], job["error"] = "error", str(e)
+    auditar(quien["usuario"], quien["ip"], "padron.actualizar_arca", os_key, "padron", None,
+            {"estado": job["estado"], "error": job["error"], "consultados": job["hechos"], "de": job["total"],
+             "modificados": len(job["cambios"]), "sin_datos": len(job["sin_datos"]), "errores": len(job["errores"]),
+             "backup_previo": job["backup"], "cambios": job["cambios"][:400]})
+
+
+@app.post("/api/padron/arca")
+async def padron_arca(request: Request, u=Auth):
+    """Arranca la actualización de la responsabilidad fiscal del padrón con los datos de ARCA."""
+    os_key = _os((await request.json()).get("os"))
+    if not arca.configurado():
+        raise ValueError("La conexión con ARCA no está configurada. El administrador debe cargar ARCANUM_URL, "
+                         "ARCANUM_API_KEY y ARCANUM_CUIT en las variables de entorno del servicio.")
+    if any(j["estado"] == "corriendo" for j in ARCA_JOBS.values()):
+        raise ValueError("Ya hay una actualización desde ARCA en curso. Esperá a que termine.")
+    b = seguridad.crear_backup()
+    ARCA_JOBS[os_key] = {"os": os_key, "estado": "corriendo", "error": None, "total": 0, "hechos": 0, "sin_cuit": 0,
+                         "cambios": [], "sin_datos": [], "errores": [], "backup": b["nombre"]}
+    threading.Thread(target=_run_arca, args=(os_key, u), daemon=True).start()
+    return {"ok": True}
+
+
+@app.get("/api/padron/arca")
+def padron_arca_estado(os: str, u=Auth):
+    j = ARCA_JOBS.get(_os(os))
+    if not j:
+        return {"job": None}
+    return {"job": {**{k: j[k] for k in ("estado", "error", "total", "hechos", "sin_cuit")},
+                    "cambios": j["cambios"][:300], "n_cambios": len(j["cambios"]),
+                    "sin_datos": j["sin_datos"][:100], "n_sin_datos": len(j["sin_datos"]),
+                    "errores": j["errores"][:100], "n_errores": len(j["errores"])}}
+
+
+@app.get("/api/padron/arca/{cuit}")
+def padron_arca_cuit(cuit: str, u=Auth):
+    """Consulta un CUIT en ARCA (para completar la responsabilidad fiscal al editar un profesional)."""
+    r = arca.consultar(cuit)
+    A(u, "padron.consultar_arca", None, "profesional", None, cuit=r["cuit"], resp_fiscal=r["resp_fiscal"])
+    return {**r, "codigo_iva": logic.codigo_iva(r["resp_fiscal"])}
 
 
 @app.post("/api/padron/importar")
@@ -326,8 +412,9 @@ async def padron_importar(os: str = Form(...), archivo: UploadFile = File(...), 
 @app.put("/api/padron/{pid}")
 async def padron_editar(pid: int, request: Request, u=Auth):
     d = await request.json()
-    campos = ["cuenta", "nombre", "cuit", "especialidad", "categoria", "resp_fiscal", "matricula"]
+    campos = ["cuenta", "nombre", "cuit", "especialidad", "categoria", "resp_fiscal", "matricula", "efector"]
     vals = {k: str(d.get(k, "") or "").strip() for k in campos}
+    campos, vals = campos + ["codigo_iva"], {**vals, "codigo_iva": logic.codigo_iva(vals["resp_fiscal"])}
     if not vals["nombre"]:
         raise ValueError("El nombre es obligatorio.")
     antes = db.q1("SELECT * FROM profesionales WHERE id=?", (pid,))
@@ -337,7 +424,7 @@ async def padron_editar(pid: int, request: Request, u=Auth):
         c.execute(f"UPDATE profesionales SET {','.join(k + '=?' for k in campos)}, nombre_norm=? WHERE id=?",
                   [vals[k] for k in campos] + [logic.norm(vals["nombre"]), pid])
     A(u, "padron.modificar", antes["os"], "profesional", pid, profesional=vals["nombre"],
-      cambios={k: {"antes": antes[k], "despues": vals[k]} for k in campos if (antes[k] or "") != vals[k]})
+      cambios={k: {"antes": antes[k], "despues": vals[k]} for k in campos if str(antes[k] if antes[k] is not None else "") != str(vals[k])})
     return {"ok": True}
 
 
@@ -345,12 +432,13 @@ async def padron_editar(pid: int, request: Request, u=Auth):
 async def padron_alta(request: Request, u=Auth):
     d = await request.json()
     os_key = _os(d.get("os"))
-    campos = ["cuenta", "nombre", "cuit", "especialidad", "categoria", "resp_fiscal", "matricula"]
+    campos = ["cuenta", "nombre", "cuit", "especialidad", "categoria", "resp_fiscal", "matricula", "efector"]
     vals = {k: str(d.get(k, "") or "").strip() for k in campos}
+    campos, vals = campos + ["codigo_iva"], {**vals, "codigo_iva": logic.codigo_iva(vals["resp_fiscal"])}
     if not vals["nombre"]:
         raise ValueError("El nombre es obligatorio.")
     with db.tx() as c:
-        c.execute(f"INSERT INTO profesionales(os,{','.join(campos)},nombre_norm) VALUES (?,?,?,?,?,?,?,?,?)",
+        c.execute(f"INSERT INTO profesionales(os,{','.join(campos)},nombre_norm) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                   [os_key] + [vals[k] for k in campos] + [logic.norm(vals["nombre"])])
     A(u, "padron.alta", os_key, "profesional", None, **vals)
     return {"ok": True}
@@ -372,7 +460,7 @@ def padron_baja(pid: int, u=Auth):
 def padron_exportar(os: str, u=Auth):
     df = pd.DataFrame(db.q(
         "SELECT cuenta Cuenta,nombre Profesional,cuit CUIT,especialidad Especialidad,categoria Categoria,"
-        "resp_fiscal 'Responsabilidad fiscal',matricula Matricula FROM profesionales WHERE os=? ORDER BY nombre",
+        "resp_fiscal 'Responsabilidad fiscal',matricula Matricula,efector Efector,codigo_iva 'Codigo de IVA' FROM profesionales WHERE os=? ORDER BY nombre",
         (_os(os),)))
     A(u, "padron.exportar", _os(os), "padron", filas=len(df))
     return _descarga(logic.df_a_xlsx(df, "Padron"), f"Padron_{_os(os)}.xlsx")
@@ -476,6 +564,62 @@ async def valor_editar(vid: int, request: Request, u=Auth):
     return {"ok": True}
 
 
+# ── Otros: valores cargados a mano para códigos que la grilla no trae
+
+@app.get("/api/otros")
+def otros(os: str, u=Auth):
+    filas = db.q("SELECT * FROM otros_valores WHERE os=? ORDER BY codigo, substr(vigencia,3)||substr(vigencia,1,2) DESC", (_os(os),))
+    return {"filas": filas}
+
+
+@app.post("/api/otros")
+async def otros_alta(request: Request, u=Auth):
+    d = await request.json()
+    r = logic.guardar_otro(_os(d.get("os")), d)
+    A(u, "valores.otros_alta", r["os"], "otro_valor", r["id"], **{k: r[k] for k in ("codigo", "descripcion", "vigencia", "valor", "valor_r")})
+    return r
+
+
+@app.put("/api/otros/{oid}")
+async def otros_editar(oid: int, request: Request, u=Auth):
+    d = await request.json()
+    antes = db.q1("SELECT * FROM otros_valores WHERE id=?", (oid,))
+    if not antes:
+        raise HTTPException(404, "Valor inexistente.")
+    r = logic.guardar_otro(antes["os"], d, oid)
+    A(u, "valores.otros_modificar", r["os"], "otro_valor", oid, codigo=r["codigo"],
+      cambios={k: {"antes": antes[k], "despues": r[k]} for k in ("codigo", "descripcion", "vigencia", "valor", "valor_r") if antes[k] != r[k]})
+    return r
+
+
+@app.delete("/api/otros/{oid}")
+def otros_baja(oid: int, u=Auth):
+    antes = db.q1("SELECT * FROM otros_valores WHERE id=?", (oid,))
+    if not antes:
+        raise HTTPException(404, "Valor inexistente.")
+    with db.tx() as c:
+        c.execute("DELETE FROM otros_valores WHERE id=?", (oid,))
+    A(u, "valores.otros_baja", antes["os"], "otro_valor", oid, **{k: v for k, v in antes.items() if k not in ("id", "os")})
+    return {"ok": True}
+
+
+@app.post("/api/otros/importar")
+async def otros_importar(os: str = Form(...), archivo: UploadFile = File(...), u=Auth):
+    datos, nombre = await _leer(archivo)
+    r = logic.importar_otros(_os(os), datos, nombre)
+    A(u, "valores.otros_importar", _os(os), "otro_valor", None, archivo=nombre, **r)
+    return r
+
+
+@app.get("/api/otros/exportar")
+def otros_exportar(os: str, u=Auth):
+    df = pd.DataFrame(db.q("SELECT codigo 'Código', descripcion 'Descripción', vigencia 'Vigencia', valor 'Valor', "
+                           "valor_r 'Valor R' FROM otros_valores WHERE os=? ORDER BY codigo", (_os(os),)),
+                      columns=["Código", "Descripción", "Vigencia", "Valor", "Valor R"])
+    A(u, "valores.otros_exportar", _os(os), "otro_valor", None, filas=len(df))
+    return _descarga(logic.df_a_xlsx(df, "Otros"), f"Otros_valores_{_os(os)}.xlsx")
+
+
 @app.delete("/api/valores")
 def valores_borrar(os: str, periodo: str, u=Auth):
     with db.tx() as c:
@@ -521,13 +665,27 @@ def _run_bot(jid, os_key, usuario, clave, desde: date, hasta: date, quien):
     try:
         with _bot_lock:   # una sola sesión de EVWEB a la vez
             rangos = generar_rangos_9_dias(desde, hasta)
-            res = ejecutar_extractor(usuario, clave, logic.OBRAS[os_key]["codigo"], rangos, prog, HEADLESS)
+            # SWISS MEDICAL tiene dos códigos: se extrae uno y después el otro, y se acumulan
+            codigos = logic.codigos_evweb(os_key)
+            res = {"excels": [], "avisos": [], "error": None}
+            for n, cod in enumerate(codigos):
+                def prog_cod(texto, pct, _n=n, _cod=cod):
+                    prog((f"[{_cod}] " if len(codigos) > 1 else "") + texto, (_n + pct) / len(codigos))
+                parcial = ejecutar_extractor(usuario, clave, cod, rangos, prog_cod, HEADLESS)
+                for df in parcial["excels"]:
+                    df["Código OS extraído"] = cod
+                res["excels"] += parcial["excels"]
+                res["avisos"] += [(f"[{cod}] " if len(codigos) > 1 else "") + a for a in parcial.get("avisos", [])]
+                if parcial.get("error"):
+                    res["error"] = (f"[{cod}] " if len(codigos) > 1 else "") + parcial["error"]
+                    break
         job["avisos"] = res.get("avisos", [])
         guard = {"filas": 0, "nuevas": 0}
         if res["excels"]:
             prog("Guardando datos extraídos…", 0.92)
             guard = logic.guardar_evweb(os_key, res["excels"], "bot", f"{desde:%d/%m/%Y}", f"{hasta:%d/%m/%Y}")
-        job["resultado"] = {**guard, "tramos": len(rangos), "descargados": len(res["excels"])}
+        job["resultado"] = {**guard, "tramos": len(rangos) * len(codigos), "descargados": len(res["excels"]),
+                            "codigos": codigos}
         auditar(quien["usuario"], quien["ip"], "evweb.extraccion_fin", os_key, "evweb", None,
                 {"desde": f"{desde:%d/%m/%Y}", "hasta": f"{hasta:%d/%m/%Y}", **job["resultado"],
                  "error": res.get("error"), "avisos": job["avisos"]})
@@ -657,10 +815,13 @@ def archivo_descargar(nombre: str, u=Admin):
 
 @app.post("/api/prefacturar")
 async def prefacturar(os: str = Form(...), periodo: str = Form(...), solo_nuevas: str = Form(""),
-                      archivo: UploadFile = File(...), u=Auth):
+                      modo: str = Form("evweb"), archivo: UploadFile = File(...), u=Auth):
     datos, nombre = await _leer(archivo)
+    modo = modo if modo in ("evweb", "grilla") else "evweb"
     try:
-        r = logic.prefacturar(_os(os), periodo, datos, nombre, solo_nuevas == "1")
+        r = logic.prefacturar(_os(os), periodo, datos, nombre, solo_nuevas == "1", modo)
+        if _os(os) == "SWISS":
+            r["modo"] = modo
     except logic.ArchivoDuplicado as e:
         A(u, "prefacturacion.frenada_por_duplicados", _os(os), "prefacturacion", periodo, archivo=nombre, **e.info)
         return JSONResponse({"detail": str(e), "duplicado": e.info}, status_code=409)
@@ -668,8 +829,36 @@ async def prefacturar(os: str = Form(...), periodo: str = Form(...), solo_nuevas
     return r
 
 
-def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro=""):
+@app.post("/api/prefacturar/reiniciar")
+async def prefacturar_reiniciar(request: Request, u=Auth):
+    d = await request.json()
+    os_key = _os(d.get("os"))
+    b = seguridad.crear_backup()          # copia de seguridad antes de borrar
+    r = logic.reiniciar_prefacturacion(os_key)
+    A(u, "prefacturacion.reiniciar", os_key, "prefacturacion", None, backup_previo=b["nombre"], **r)
+    return r
+
+
+@app.delete("/api/evweb")
+def evweb_quitar(os: str, u=Auth):
+    os_key = _os(os)
+    b = seguridad.crear_backup()
+    r = logic.quitar_evweb(os_key)
+    A(u, "evweb.quitar_datos", os_key, "evweb", None, backup_previo=b["nombre"], **r)
+    return r
+
+
+def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", afil="", cods=""):
     sql, par = "SELECT * FROM lineas WHERE os=? AND estado=?", [os_key, estado]
+    if cods:        # «difieren» / «coinciden»: código propuesto contra el del archivo
+        sql += " AND " + ("" if cods == "difieren" else "NOT ") + \
+            "(COALESCE(cod_propuesto,'')<>'' AND LTRIM(cod_propuesto,'0')<>LTRIM(cod_practica,'0'))"
+    if rf:          # condición del profesional («-» = sin dato)
+        sql += " AND COALESCE(resp_fiscal,'')=?"
+        par.append("" if rf == "-" else rf)
+    if afil:        # condición del afiliado
+        sql += " AND COALESCE(cond_afiliado,'')=?"
+        par.append("" if afil == "-" else afil)
     if nro.strip():
         sql += " AND nro_transaccion LIKE ?"
         par.append(f"%{logic.limpiar_id(nro)}%")
@@ -692,28 +881,54 @@ def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro=""):
 
 @app.get("/api/lineas")
 def lineas(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "", nro: str = "",
-           limite: int = 1500, desde: int = 0, u=Auth):
+           rf: str = "", afil: str = "", cods: str = "", limite: int = 1500, desde: int = 0, solo_ids: int = 0, u=Auth):
     os_key = _os(os)
     if estado not in ("prefact", "facturacion", "template"):
         raise HTTPException(400, "Estado inválido.")
-    filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro)
+    filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro, rf, afil, cods)
+    for f in filas:
+        f["codigos"] = "Difieren cód." if logic.codigos_difieren(f) else "Coinciden códigos"
+    if solo_ids:    # para «Seleccionar todas las filtradas»
+        return {"ids": [f["id"] for f in filas]}
+    cond = lambda campo: [r["v"] or "-" for r in db.q(  # noqa: E731
+        f"SELECT DISTINCT COALESCE({campo},'') v FROM lineas WHERE os=? AND estado=? ORDER BY 1", (os_key, estado))]
     pers = [r["periodo"] for r in db.q("SELECT DISTINCT periodo FROM lineas WHERE os=? AND estado=?", (os_key, estado))]
     tramo = filas[desde:desde + limite] if limite > 0 else filas
     return {"total": len(filas), "importe": round(sum(f["total"] or 0 for f in filas), 2),
             "listas": sum(1 for f in filas if not logic.validar_para_procesar(f)),
             "periodos": sorted(pers, key=lambda p: (p[2:], p[:2]), reverse=True), "filas": tramo,
-            "profesionales": logic.opciones_profesional("lineas", os_key, "AND estado=?", (estado,))}
+            "profesionales": logic.opciones_profesional("lineas", os_key, "AND estado=?", (estado,)),
+            "cond_prof": cond("resp_fiscal"), "cond_afil": cond("cond_afiliado"),
+            "difieren": db.scalar("SELECT COUNT(*) FROM lineas WHERE os=? AND estado=? AND COALESCE(cod_propuesto,'')<>'' "
+                                  "AND LTRIM(cod_propuesto,'0')<>LTRIM(cod_practica,'0')", (os_key, estado))}
+
+
+@app.post("/api/lineas/resumen")
+async def lineas_resumen(request: Request, u=Auth):
+    """Para el diálogo de Procesar: cuántas de las líneas elegidas tienen código propuesto distinto del archivo."""
+    d = await request.json()
+    os_key, ids = _os(d.get("os")), [int(i) for i in d.get("ids", [])]
+    n, ejemplos = 0, {}
+    for bloque in (ids[i:i + 500] for i in range(0, len(ids), 500)):
+        for f in db.q(f"SELECT cod_practica, cod_propuesto FROM lineas WHERE os=? AND id IN ({','.join('?' * len(bloque))})",
+                      [os_key] + bloque):
+            if logic.codigos_difieren(f):
+                n += 1
+                k = f"{f['cod_practica']} → {f['cod_propuesto']}"
+                ejemplos[k] = ejemplos.get(k, 0) + 1
+    return {"difieren": n, "cambios": sorted(ejemplos.items(), key=lambda x: -x[1])[:12]}
 
 
 @app.get("/api/lineas/exportar")
 def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "",
-                    nro: str = "", u=Auth):
-    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro)
+                    nro: str = "", rf: str = "", afil: str = "", cods: str = "", u=Auth):
+    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro, rf, afil, cods)
     cols = ["periodo", "nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
-            "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
+            "cod_propuesto", "codigos", "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
             "valor_unit", "total", "valor_archivo", "valor_grilla", "total_archivo", "total_grilla", "origen_valor",
-            "cruce", "observacion"]
+            "cruce", "observacion", "resp_fiscal", "cond_afiliado", "iva"] + (["os_codigo"] if _os(os) == "SWISS" else [])
     for f in filas:
+        f["codigos"] = "Difieren cód." if logic.codigos_difieren(f) else "Coinciden códigos"
         f["total_archivo"] = round(f["valor_archivo"] * (f["cantidad"] or 1), 2) if f["valor_archivo"] else None
         f["total_grilla"] = round(f["valor_grilla"] * (f["cantidad"] or 1), 2) if f["valor_grilla"] else None
     df = pd.DataFrame([{k: f[k] for k in cols} for f in filas], columns=cols)
@@ -737,9 +952,14 @@ async def lineas_accion(request: Request, u=Auth):
     ids = [int(i) for i in d.get("ids", [])]
     if not ids:
         raise ValueError("No hay filas seleccionadas.")
-    if accion not in ("procesar", "rechazar", "eliminar", "editar"):
+    if accion not in ("procesar", "rechazar", "eliminar", "editar", "iva", "revalorizar"):
         raise HTTPException(400, "Acción inválida.")
+    iva = d.get("iva")
+    if accion == "iva" and iva not in (0, 1):
+        raise ValueError("El IVA debe ser 1 (calcula IVA) o 0 (no calcula IVA).")
     fuente = d.get("fuente") if d.get("fuente") in ("archivo", "grilla") else ""
+    codigo = "propuesto" if d.get("codigo") == "propuesto" else "archivo"
+    con_propuesto = 0
     con_fuente = sin_fuente = 0
     hechas, omitidas, afectadas = 0, [], []
     with db.tx() as c:
@@ -749,18 +969,28 @@ async def lineas_accion(request: Request, u=Auth):
                 f"SELECT * FROM lineas WHERE os=? AND id IN ({marcas})", [os_key] + bloque).fetchall()]
             for f in filas:
                 if accion == "procesar" and f["estado"] == "prefact":
+                    cod_antes = f["cod_practica"]
+                    f, cambio_codigo = logic.aplicar_codigo(f, codigo)
                     f, aplicada = logic.aplicar_fuente(f, fuente)
                     faltan = logic.validar_para_procesar(f)
                     if faltan:
                         omitidas.append({"id": f["id"], "nro": f["nro_transaccion"], "faltan": faltan})
                         continue
                     con_fuente, sin_fuente = con_fuente + aplicada, sin_fuente + (not aplicada)
-                    c.execute("UPDATE lineas SET estado='facturacion', valor_unit=?, total=?, origen_valor=? WHERE id=?",
-                              (f["valor_unit"], f["total"], f["origen_valor"], f["id"]))
+                    con_propuesto += cambio_codigo
+                    c.execute("UPDATE lineas SET estado='facturacion', valor_unit=?, total=?, origen_valor=?, cod_practica=?, "
+                              "descripcion=? WHERE id=?",
+                              (f["valor_unit"], f["total"], f["origen_valor"], f["cod_practica"], f["descripcion"], f["id"]))
+                    if cambio_codigo:
+                        f["_cod_antes"] = cod_antes
                 elif accion == "rechazar" and f["estado"] == "facturacion":
                     c.execute("UPDATE lineas SET estado='prefact' WHERE id=?", (f["id"],))
                 elif accion == "eliminar" and f["estado"] in ("prefact", "facturacion"):
                     c.execute("DELETE FROM lineas WHERE id=?", (f["id"],))
+                elif accion == "iva" and f["estado"] in ("prefact", "facturacion"):
+                    if f["iva"] == iva:
+                        continue
+                    c.execute("UPDATE lineas SET iva=? WHERE id=?", (iva, f["id"]))
                 elif accion == "editar" and f["estado"] in ("prefact", "facturacion"):
                     pass
                 else:
@@ -770,7 +1000,33 @@ async def lineas_accion(request: Request, u=Auth):
                     afectadas.append({k: f[k] for k in f if k not in ("creado", "template_id") and f[k] not in (None, "")})
                 else:
                     afectadas.append({"id": f["id"], "transaccion": f["nro_transaccion"], "cod": f["cod_practica"],
-                                      **({"total": f["total"], "origen_valor": f["origen_valor"]} if accion == "procesar" else {})})
+                                      **({"total": f["total"], "origen_valor": f["origen_valor"]} if accion == "procesar" else {}),
+                                      **({"codigo_archivo": f["_cod_antes"]} if f.get("_cod_antes") else {}),
+                                      **({"iva_antes": f["iva"]} if accion == "iva" else {})})
+    if accion == "revalorizar":   # vuelve a valorizar con el padrón, la grilla y «Otros» actuales
+        rv, sin_cambio = logic.Revalorizador(os_key), 0
+        for bloque in (ids[i:i + 500] for i in range(0, len(ids), 500)):
+            filas = db.q(f"SELECT * FROM lineas WHERE os=? AND estado IN ('prefact','facturacion') AND id IN ({','.join('?' * len(bloque))})",
+                         [os_key] + bloque)
+            with db.tx() as c:
+                for f in filas:
+                    nuevo, cambios = rv.linea(f)
+                    if nuevo is None:
+                        omitidas.append({"id": f["id"], "nro": f["nro_transaccion"], "faltan": [cambios]})
+                        continue
+                    hechas += 1
+                    if not cambios:
+                        sin_cambio += 1
+                        continue
+                    c.execute(f"UPDATE lineas SET {','.join(k + '=?' for k in cambios)} WHERE id=?",
+                              [nuevo[k] for k in cambios] + [f["id"]])
+                    afectadas.append({"id": f["id"], "transaccion": f["nro_transaccion"], "cambios": cambios})
+        for i in range(0, len(afectadas), 500):
+            A(u, "lineas.revalorizar", os_key, "linea", None, cantidad=len(afectadas), parte=i // 500 + 1,
+              lineas=afectadas[i:i + 500])
+        return {"hechas": hechas, "omitidas": omitidas[:50], "n_omitidas": len(omitidas), "cambiaron": len(afectadas),
+                "sin_cambio": sin_cambio, "importe_antes": round(sum(a["cambios"]["total"]["antes"] or 0 for a in afectadas if "total" in a["cambios"]), 2),
+                "importe_despues": round(sum(a["cambios"]["total"]["despues"] or 0 for a in afectadas if "total" in a["cambios"]), 2)}
     if accion == "editar":   # edición masiva: mismos cambios a todas las seleccionadas
         hechas = 0
         for i in ids:
@@ -782,11 +1038,13 @@ async def lineas_accion(request: Request, u=Auth):
                 omitidas.append({"id": i, "nro": "", "faltan": [str(e)]})
     for i in range(0, len(afectadas), 500):   # registros de hasta 500 líneas cada uno
         A(u, {"procesar": "lineas.procesar", "rechazar": "lineas.rechazar", "eliminar": "lineas.eliminar",
-              "editar": "lineas.modificar_masivo"}[accion], os_key, "linea", None,
-          cantidad=len(afectadas), parte=i // 500 + 1, **({"valor_tomado_de": fuente} if accion == "procesar" and fuente else {}),
+              "editar": "lineas.modificar_masivo", "iva": "lineas.asignar_iva"}[accion], os_key, "linea", None,
+          cantidad=len(afectadas), **({"iva": iva} if accion == "iva" else {}), parte=i // 500 + 1, **({"valor_tomado_de": fuente} if accion == "procesar" and fuente else {}),
+          **({"codigo_tomado": codigo} if accion == "procesar" else {}),
           lineas=afectadas[i:i + 500])
     return {"hechas": hechas, "omitidas": omitidas[:50], "n_omitidas": len(omitidas),
-            "fuente": fuente, "con_fuente": con_fuente, "sin_fuente": sin_fuente}
+            "fuente": fuente, "con_fuente": con_fuente, "sin_fuente": sin_fuente,
+            "codigo": codigo, "con_propuesto": con_propuesto}
 
 
 # ───────────────────────── templates ─────────────────────────

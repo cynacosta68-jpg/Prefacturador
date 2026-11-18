@@ -12,13 +12,21 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 
-from . import db, grillas
+from . import db, grillas, smg
 
 OBRAS = {
     "AVALIAN": {"codigo": "10067", "nombre": "10067 - A.C.A. SALUD (AVALIAN)"},
     "SANCOR": {"codigo": "10117", "nombre": "10117 - ASOCIACION MUTUAL SANCOR"},
     "GALENO": {"codigo": "10099", "nombre": "10099 - GALENO Argentina S.A. AZUL/BLANCO/ORO/PLATA"},
+    # SWISS MEDICAL tiene dos códigos en EVWEB: el bot extrae primero 11062 (I.V.A.) y después 11060
+    "SWISS": {"codigo": "11060 / 11062", "codigos": ["11062", "11060"],
+              "nombre": "11060 - SWISS MEDICAL S.A. · 11062 - SWISS MEDICAL S.A. (I.V.A.)"},
 }
+
+
+def codigos_evweb(os_key):
+    """Códigos de obra social que el bot debe extraer, en orden."""
+    return OBRAS[os_key].get("codigos") or [OBRAS[os_key]["codigo"]]
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 SEED = os.path.join(os.path.dirname(os.path.dirname(__file__)), "seed")
@@ -167,8 +175,16 @@ def sin_formulas(ws):
 
 # ───────────────────────── padrón ─────────────────────────
 
+def codigo_iva(resp_fiscal):
+    """Código de IVA del profesional: 1 = calcula IVA (Responsable Inscripto), 0 = no calcula IVA."""
+    return 1 if norm(resp_fiscal) == "responsable inscripto" else 0
+
+
 def importar_padron(os_key, contenido, nombre, reemplazar=True):
-    df = leer_tabla(contenido, nombre, claves=["Profesional", "Nombre", "CUIT"])
+    return importar_padron_df(os_key, leer_tabla(contenido, nombre, claves=["Profesional", "Nombre", "CUIT"]), reemplazar)
+
+
+def importar_padron_df(os_key, df, reemplazar=True):
     c_nombre = col(df, "Profesional", "Nombre")
     if not c_nombre:
         raise ValueError("No se encontró la columna Profesional/Nombre en el padrón.")
@@ -183,6 +199,7 @@ def importar_padron(os_key, contenido, nombre, reemplazar=True):
     c_esp = col(df, "Especialidad")
     c_cat = col(df, "Categoria", "Arancel")
     c_rf = col(df, "Responsabilidad fiscal")
+    c_ef = col(df, "Efector", parcial=False)
     filas = []
     for _, r in df.iterrows():
         nom = txt(r[c_nombre])
@@ -192,19 +209,23 @@ def importar_padron(os_key, contenido, nombre, reemplazar=True):
             os_key,
             txt(r[c_cuenta]) if c_cuenta else "",
             nom,
-            limpiar_id(r[c_cuit]) if c_cuit else "",
+            re.sub(r"\D", "", limpiar_id(r[c_cuit])) if c_cuit else "",      # el CUIT se guarda sin guiones
             txt(r[c_esp]) if c_esp else "",
             txt(r[c_cat]) if c_cat else "",
             txt(r[c_rf]) if c_rf else "",
             limpiar_id(r[c_mp]) if c_mp else "",
             norm(nom),
+            limpiar_id(r[c_ef]) if c_ef else "",
+            codigo_iva(r[c_rf]) if c_rf else 0,      # siempre sale de la responsabilidad fiscal
         ))
+    if not filas:
+        raise ValueError("El padrón no trae ningún profesional.")
     with db.tx() as c:
         if reemplazar:
             c.execute("DELETE FROM profesionales WHERE os=?", (os_key,))
         c.executemany(
-            "INSERT INTO profesionales(os,cuenta,nombre,cuit,especialidad,categoria,resp_fiscal,matricula,nombre_norm)"
-            " VALUES (?,?,?,?,?,?,?,?,?)", filas)
+            "INSERT INTO profesionales(os,cuenta,nombre,cuit,especialidad,categoria,resp_fiscal,matricula,nombre_norm,"
+            "efector,codigo_iva) VALUES (?,?,?,?,?,?,?,?,?,?,?)", filas)
     return len(filas)
 
 
@@ -274,10 +295,90 @@ class Padron:
 # La extracción y normalización vive en grillas.py
 
 def importar_grilla(os_key, periodo, contenido, nombre):
+    if os_key == "SWISS" and smg.es_base(contenido):     # base con solapas Nomenclador, unidades y Valor Fijos
+        return smg.importar_base(os_key, contenido, nombre)
     return grillas.importar(os_key, validar_periodo(periodo), contenido, nombre)
 
 
 Grilla = grillas.Grilla
+
+
+# ───────────────────────── Otros: valores cargados a mano ─────────────────────────
+
+def _ar(n):
+    """Importe con formato argentino: 1.234,56"""
+    return f"{n:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
+
+
+def _clave_cod(cod):
+    c = re.sub(r"[.\s/-]", "", str(cod or "")).upper()
+    return c.lstrip("0") or c
+
+
+def valor_otros(os_key, cod, periodo, categoria=""):
+    """Valor de la solapa «Otros» para un código: la vigencia más reciente que no supere el período.
+    Categoría R usa «valor R» si está cargado. Devuelve (valor, vigencia) o (None, '')."""
+    k = _clave_cod(cod)
+    if not k:
+        return None, ""
+    filas = [f for f in db.q("SELECT * FROM otros_valores WHERE os=?", (os_key,)) if _clave_cod(f["codigo"]) == k]
+    clave = lambda p: (p[2:], p[:2])  # noqa: E731
+    vigentes = sorted((f for f in filas if not periodo or clave(f["vigencia"]) <= clave(periodo)),
+                      key=lambda f: clave(f["vigencia"]), reverse=True)
+    for f in vigentes:
+        v = f["valor_r"] if (str(categoria or "").strip().upper() == "R" and f["valor_r"]) else f["valor"]
+        if v:
+            return v, f["vigencia"]
+    return None, ""
+
+
+def guardar_otro(os_key, d, oid=None):
+    cod = txt(d.get("codigo"))
+    if not cod:
+        raise ValueError("El código es obligatorio.")
+    vig = validar_periodo(txt(d.get("vigencia")))
+
+    def monto(v):
+        if v in (None, ""):
+            return None
+        n = num(v)
+        if n < 0:
+            raise ValueError("El valor no puede ser negativo.")
+        return round(n, 2) or None
+    vals = (cod, txt(d.get("descripcion"))[:300], vig, monto(d.get("valor")), monto(d.get("valor_r")))
+    otro = db.q1("SELECT id FROM otros_valores WHERE os=? AND codigo=? AND vigencia=? AND id<>?", (os_key, cod, vig, oid or 0))
+    if otro:
+        raise ValueError(f"Ya hay un valor cargado para el código {cod} con vigencia {vig}.")
+    with db.tx() as c:
+        if oid:
+            c.execute("UPDATE otros_valores SET codigo=?, descripcion=?, vigencia=?, valor=?, valor_r=? WHERE id=? AND os=?",
+                      vals + (oid, os_key))
+        else:
+            oid = c.execute("INSERT INTO otros_valores(codigo,descripcion,vigencia,valor,valor_r,os) VALUES (?,?,?,?,?,?)",
+                            vals + (os_key,)).lastrowid
+    return db.q1("SELECT * FROM otros_valores WHERE id=?", (oid,))
+
+
+def importar_otros(os_key, contenido, nombre):
+    """Excel con columnas Código, Descripción, Vigencia (MMAAAA), Valor y Valor R. Actualiza o agrega por código + vigencia."""
+    df = leer_tabla(contenido, nombre, claves=["Código", "Codigo", "Vigencia"])
+    c_cod, c_desc, c_vig = col(df, "Código", "Codigo"), col(df, "Descripción", "Descripcion", "Prestación"), col(df, "Vigencia")
+    c_r = col(df, "Valor R", "Valor recertificado", parcial=False)
+    c_val = col(df, "Valor", "Valor todas las categorías", parcial=False) or next(
+        (c for c in df.columns if norm(c).startswith("valor") and c != c_r), None)
+    if not c_cod or not c_vig or not c_val:
+        raise ValueError("El archivo debe tener las columnas Código, Vigencia y Valor.")
+    nuevos = actualizados = 0
+    for _, r in df.iterrows():
+        cod = limpiar_id(r[c_cod])
+        if not cod:
+            continue
+        d = dict(codigo=cod, descripcion=txt(r[c_desc]) if c_desc else "", vigencia=limpiar_id(r[c_vig]).zfill(6),
+                 valor=r[c_val], valor_r=r[c_r] if c_r else None)
+        ya = db.q1("SELECT id FROM otros_valores WHERE os=? AND codigo=? AND vigencia=?", (os_key, cod, d["vigencia"]))
+        guardar_otro(os_key, d, ya["id"] if ya else None)
+        nuevos, actualizados = nuevos + (not ya), actualizados + bool(ya)
+    return {"nuevos": nuevos, "actualizados": actualizados}
 
 
 # ───────────────────────── EVWEB ─────────────────────────
@@ -497,6 +598,7 @@ PARSERS = {
     "GALENO": (_parse_galeno, ["Id Transacción", "Id Transaccion"]),
     "SANCOR": (_parse_sancor, ["NRO ORDEN"]),
     "AVALIAN": (_parse_avalian, ["tranxml_id"]),
+    "SWISS": (smg.parse_reporte, ["N° Transacción", "transacción_item", "Código de prestación"]),
 }
 
 
@@ -519,13 +621,16 @@ class ArchivoDuplicado(Exception):
         self.info = info
 
 
-def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
+def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False, modo="evweb"):
     """Cruza el archivo validado con lo extraído de EVWEB por número de
     transacción, completa profesional desde el padrón y valoriza.
 
     Las líneas se acumulan con las que ya están en pre-facturación. Si el archivo trae
     transacciones ya cargadas, no se importa nada (salvo que se pida importar solo las nuevas)."""
     periodo = validar_periodo(periodo)
+    # SWISS: cada transacción es una sola prestación y el código puede corregirse al valorizar,
+    # así que la repetición se detecta por número de transacción.
+    kd = (lambda n, c: (n, "")) if os_key == "SWISS" else (lambda n, c: (n, c))
     parser, claves = PARSERS[os_key]
     filas, anuladas = parser(leer_tabla(contenido, nombre, claves=claves))
     if not filas:
@@ -535,13 +640,13 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
     previa = db.q1("SELECT nombre, fecha FROM importaciones WHERE os=? AND hash=? ORDER BY id DESC", (os_key, huella))
     existentes = {}
     for r in db.q("SELECT nro_transaccion, cod_practica, estado FROM lineas WHERE os=?", (os_key,)):
-        existentes[(r["nro_transaccion"], r["cod_practica"])] = r["estado"]
-    repetidas = [f for f in filas if (f["claves"][0], f["cod"]) in existentes]
+        existentes[kd(r["nro_transaccion"], r["cod_practica"])] = r["estado"]
+    repetidas = [f for f in filas if kd(f["claves"][0], f["cod"]) in existentes]
     if repetidas and not solo_nuevas:
         donde = {"prefact": "Pre-facturación", "facturacion": "Facturación", "template": "un template"}
         por_estado = {}
         for f in repetidas:
-            e = donde[existentes[(f["claves"][0], f["cod"])]]
+            e = donde[existentes[kd(f["claves"][0], f["cod"])]]
             por_estado[e] = por_estado.get(e, 0) + 1
         nuevas_n = len(filas) - len(repetidas)
         motivo = (f"Este archivo ya fue importado el {previa['fecha']}." if previa and not nuevas_n
@@ -558,7 +663,11 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
         ev.setdefault(f["nro"], f)
     padron = Padron(os_key)
     grilla = Grilla(os_key, periodo)
-    ya = {(r["nro_transaccion"], r["cod_practica"]) for r in
+    swiss = os_key == "SWISS"
+    vz = smg.Valorizadores(os_key) if swiss else None
+    cache_otros = {}
+    por_grilla = swiss and modo == "grilla"       # SWISS: cruzar y valorizar según grilla, sin EVWEB
+    ya = {kd(r["nro_transaccion"], r["cod_practica"]) for r in
           db.q("SELECT nro_transaccion, cod_practica FROM lineas WHERE os=?", (os_key,))}
 
     res = dict(total=len(filas), anuladas=anuladas, duplicadas=0, ok=0, sin_evweb=0, sin_padron=0,
@@ -567,15 +676,22 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
     nuevas, vistos = [], set()
     for f in filas:
         nro = f["claves"][0]
-        k = (nro, f["cod"])
+        k = kd(nro, f["cod"])
         if k in ya:
             res["duplicadas"] += 1
             continue
         # misma transacción+código repetida dentro del archivo: se conserva (puede ser cantidad real)
         vistos.add(k)
-        e = next((ev[c] for c in f["claves"] if c and c in ev), None)
+        e = None if por_grilla else next((ev[c] for c in f["claves"] if c and c in ev), None)
         prof, obs = None, []
-        if e:
+        por_cuit = padron.por_cuit.get(f.get("prof_cuit", "")) if swiss and f.get("prof_cuit") else None
+        if por_grilla:
+            # Proceso del repositorio de SWISS: el profesional sale del CUIT del efector
+            prof = por_cuit
+            cruce = "GRILLA" if prof else "SIN PADRON"
+            if not prof:
+                obs.append(f"CUIT del efector {f.get('prof_cuit') or 'vacío'} no está en el padrón")
+        elif e:
             if e["cuenta"]:
                 prof = padron.por_cuenta.get(e["cuenta"].upper())
             prof = prof or padron.buscar_nombre(e["profesional"])
@@ -585,15 +701,39 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
         else:
             cruce = "SIN EVWEB"
             # ayuda: el archivo validado trae matrícula / nombre del efector
-            prof = padron.por_mp.get(f["prof_mp"]) if f["prof_mp"] else None
+            prof = por_cuit or (padron.por_mp.get(f["prof_mp"]) if f["prof_mp"] else None)
             prof = prof or padron.buscar_nombre(f["prof_nombre"])
             obs.append("Transacción no encontrada en EVWEB"
                        + (" · profesional sugerido por el archivo validado" if prof else ""))
-        res["ok" if cruce == "OK" else "sin_evweb" if cruce == "SIN EVWEB" else "sin_padron"] += 1
+        res["ok" if cruce in ("OK", "GRILLA") else "sin_evweb" if cruce == "SIN EVWEB" else "sin_padron"] += 1
 
         cat = prof["categoria"] if prof else ""
         esp = prof["especialidad"] if prof else ""
-        v = grilla.valor(f["cod"], cat)
+        iva, os_codigo = None, None
+        regla, per_valor = "", periodo
+        # Código propuesto: el del archivo no se toca; se valoriza con el propuesto
+        cod_val, desc_prop, motivo_cod = smg.codigo_propuesto(f["cod"], esp) if swiss else (f["cod"], "", "")
+        if motivo_cod:
+            obs.append(f"Código propuesto {cod_val}: {motivo_cod}")
+        if swiss:
+            # Valorización con las reglas del repositorio, sobre el mes de la transacción
+            v, regla, per_valor, hay_base = vz.valor(f["fecha"], cod_val, cat, esp, periodo, desc_prop or f.get("desc", ""))
+            iva, os_codigo = smg.iva_y_codigo(prof["resp_fiscal"] if prof else "", f.get("condicion_iva"))
+            res["grilla_periodo"] = per_valor if hay_base else res.get("grilla_periodo")
+            if not hay_base:
+                obs.append(f"No hay grilla de valores cargada para {per_valor}")
+        else:
+            v = grilla.valor(f["cod"], cat)
+        # «Otros» (valores cargados a mano) manda sobre la grilla: sirve para los códigos que la grilla
+        # no trae y para corregir un valor de la grilla sin tocarla.
+        ko = (_clave_cod(cod_val), per_valor if swiss else periodo, cat)
+        if ko not in cache_otros:
+            cache_otros[ko] = valor_otros(os_key, *ko)
+        vo, vig = cache_otros[ko]
+        if vo:
+            if v and abs(v - vo) > 0.01:
+                obs.append(f"Valor de «Otros» en lugar del de la grilla ({_ar(v)})")
+            v, regla = vo, f"Otros (vigencia {vig})"
         # GALENO no informa importes: se valoriza con la grilla. SANCOR y AVALIAN
         # traen el importe validado por la obra social; la grilla queda de respaldo.
         v_arch = round(f["importe"] / f["cant"], 2) if f["importe"] else None
@@ -602,24 +742,26 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False):
         if f["importe"]:
             vu, origen = v_arch, "archivo validado"
         elif v:
-            vu, origen = v, f"grilla {grilla.periodo}"
+            vu, origen = v, (f"Valores · {regla}" if regla.startswith("Otros") else
+                             f"grilla {per_valor} · {regla}" if swiss else f"grilla {grilla.periodo}")
         else:
             vu, origen = 0.0, ""
             res["sin_valor"] += 1
-            obs.append("Sin valor en grilla")
+            obs.append(("#REVISAR VALORES: " + (regla or "la prestación no está en la grilla")) if swiss else "Sin valor en grilla")
         nuevas.append((
             os_key, periodo, "prefact", nro, f["fecha"], f["afiliado_numero"], f["afiliado_nombre"],
             f["cod"], f["desc"], f["cant"],
             prof["cuenta"] if prof else "", padron.mp(prof) or (f["prof_mp"] if not prof else ""),
             prof["nombre"] if prof else (e["profesional"] if e else f["prof_nombre"]),
             prof["cuit"] if prof else "", esp, cat, vu, round(vu * f["cant"], 2), origen, cruce,
-            " · ".join(obs), ahora, v_arch, v or None))
+            " · ".join(obs), ahora, v_arch, v or None, iva, os_codigo,
+            prof["resp_fiscal"] if prof else "", f.get("condicion_iva", ""), cod_val, desc_prop))
     with db.tx() as c:
         c.executemany(
             "INSERT INTO lineas(os,periodo,estado,nro_transaccion,fecha_prestacion,afiliado_numero,afiliado_nombre,"
             "cod_practica,descripcion,cantidad,cuenta,matricula,profesional,cuit,especialidad,categoria,valor_unit,"
-            "total,origen_valor,cruce,observacion,creado,valor_archivo,valor_grilla) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "total,origen_valor,cruce,observacion,creado,valor_archivo,valor_grilla,iva,os_codigo,resp_fiscal,cond_afiliado,"
+            "cod_propuesto,desc_propuesta) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             nuevas)
         c.execute("INSERT INTO importaciones(os,hash,nombre,periodo,fecha,filas) VALUES (?,?,?,?,?,?)",
                   (os_key, huella, nombre, periodo, ahora, len(nuevas)))
@@ -645,6 +787,9 @@ def editar_linea(lid, cambios, autocompletar=False):
             nuevo[k] = num(cambios[k]) if k in ("cantidad", "valor_unit") else str(cambios[k]).strip()
     if "periodo" in cambios:
         nuevo["periodo"] = validar_periodo(nuevo["periodo"])
+    incremento = num(cambios.get("incremento")) if cambios.get("incremento") not in (None, "") else 0
+    if incremento and not (-100 < incremento <= 500):
+        raise ValueError("El incremento debe ser un porcentaje entre -100 y 500.")
     if autocompletar:
         padron = Padron(lin["os"])
         prof = None
@@ -657,28 +802,53 @@ def editar_linea(lid, cambios, autocompletar=False):
         if prof:
             nuevo.update(cuenta=prof["cuenta"], matricula=padron.mp(prof) or nuevo["matricula"],
                          profesional=prof["nombre"], cuit=prof["cuit"],
-                         especialidad=prof["especialidad"], categoria=prof["categoria"])
+                         especialidad=prof["especialidad"], categoria=prof["categoria"],
+                         resp_fiscal=prof["resp_fiscal"])
         elif nuevo["cuenta"] != lin["cuenta"] or nuevo["matricula"] != lin["matricula"]:
             raise ValueError("La cuenta / matrícula indicada no existe en el padrón de esta obra social.")
         cambio_cod = nuevo["cod_practica"] != lin["cod_practica"] or nuevo["categoria"] != lin["categoria"] \
             or nuevo["periodo"] != lin["periodo"]
-        if cambio_cod or lin.get("valor_grilla") is None:
+        cambio_esp = lin["os"] == "SWISS" and nuevo["especialidad"] != lin["especialidad"]
+        if nuevo["cod_practica"] != lin["cod_practica"] or cambio_esp or not lin.get("cod_propuesto"):
+            # el código propuesto sigue al código de la línea y a la especialidad
+            if lin["os"] == "SWISS":
+                nuevo["cod_propuesto"], nuevo["desc_propuesta"], _ = smg.codigo_propuesto(nuevo["cod_practica"], nuevo["especialidad"])
+            else:
+                nuevo["cod_propuesto"], nuevo["desc_propuesta"] = nuevo["cod_practica"], ""
+        cod_val = nuevo.get("cod_propuesto") or nuevo["cod_practica"]
+        if cambio_cod or lin.get("valor_grilla") is None or cambio_esp:
             g = Grilla(lin["os"], nuevo["periodo"])
-            v = g.valor(nuevo["cod_practica"], nuevo["categoria"])
+            if lin["os"] == "SWISS":
+                v = smg.Valorizadores("SWISS").valor(nuevo["fecha_prestacion"], cod_val, nuevo["categoria"],
+                                                     nuevo["especialidad"], nuevo["periodo"],
+                                                     nuevo.get("desc_propuesta") or nuevo.get("descripcion") or "")[0]
+            else:
+                v = g.valor(cod_val, nuevo["categoria"])
+            v = valor_otros(lin["os"], cod_val, nuevo["periodo"], nuevo["categoria"])[0] or v
             nuevo["valor_grilla"] = v or None            # la columna Valor grilla sigue al código y la categoría
             if v and "valor_unit" not in cambios and (cambio_cod or not lin["valor_unit"]):
                 nuevo["valor_unit"], nuevo["origen_valor"] = v, f"grilla {g.periodo}"
     if "valor_unit" in cambios and num(cambios["valor_unit"]) != lin["valor_unit"]:
         nuevo["origen_valor"] = "manual"
+    if incremento:      # incremento (o descuento) porcentual sobre el valor unitario de esta línea
+        base = nuevo["valor_unit"] or 0
+        if not base:
+            raise ValueError("La línea no tiene valor unitario: no se le puede aplicar un incremento.")
+        nuevo["valor_unit"] = round(base * (1 + incremento / 100), 2)
+        marca = f"{incremento:+g} % sobre {_ar(base)}"
+        nuevo["origen_valor"] = ((nuevo["origen_valor"] or "manual").split(" · incremento")[0] + f" · incremento {incremento:+g} %")[:200]
+        nuevo["observacion"] = " · ".join(x for x in (nuevo.get("observacion") or "", f"Incremento {marca}") if x)
     nuevo["total"] = round(nuevo["valor_unit"] * (nuevo["cantidad"] or 1), 2)
     if nuevo["cuenta"] and nuevo["profesional"] and lin["cruce"] != "OK":
         nuevo["cruce"] = "MANUAL"
-    campos = CAMPOS_EDITABLES + ["total", "origen_valor", "cruce", "valor_grilla"]
+    campos = CAMPOS_EDITABLES + ["total", "origen_valor", "cruce", "valor_grilla", "resp_fiscal", "cod_propuesto", "desc_propuesta"]
     with db.tx() as c:
         c.execute(f"UPDATE lineas SET {','.join(k + '=?' for k in campos)} WHERE id=?",
                   [nuevo[k] for k in campos] + [lid])
     final = db.q1("SELECT * FROM lineas WHERE id=?", (lid,))
     final["_cambios"] = {k: {"antes": lin[k], "despues": final[k]} for k in campos if lin[k] != final[k]}
+    if incremento:
+        final["_cambios"]["incremento_porcentual"] = incremento
     return final
 
 
@@ -694,6 +864,8 @@ def completar_valores_lineas():
                 "AND estado IN ('prefact','facturacion')")
     grillas, cambios = {}, []
     for l in pend:
+        if l["os"] == "SWISS":
+            continue          # sus valores salen de reglas propias al pre-facturar o al modificar la línea
         k = (l["os"], l["periodo"])
         if k not in grillas:
             grillas[k] = Grilla(*k)
@@ -704,6 +876,61 @@ def completar_valores_lineas():
         with db.tx() as c:
             c.executemany("UPDATE lineas SET valor_grilla=? WHERE id=?", cambios)
     return len(cambios)
+
+
+class Revalorizador:
+    """Vuelve a valorizar líneas con lo que está cargado ahora: categoría y especialidad del padrón,
+    grilla de valores y «Otros». Se usa después de corregir el padrón o los valores."""
+
+    def __init__(self, os_key):
+        self.os, self.padron, self.grillas = os_key, Padron(os_key), {}
+        self.vz = smg.Valorizadores(os_key) if os_key == "SWISS" else None
+
+    def linea(self, lin):
+        """Devuelve (línea nueva, cambios) o (None, motivo) si no se pudo valorizar."""
+        nuevo = dict(lin)
+        prof = (self.padron.por_cuit.get(re.sub(r"\D", "", lin["cuit"] or "")) if lin["cuit"] else None) \
+            or (self.padron.por_cuenta.get((lin["cuenta"] or "").upper()) if lin["cuenta"] else None)
+        if prof:
+            nuevo.update(especialidad=prof["especialidad"], categoria=prof["categoria"], resp_fiscal=prof["resp_fiscal"])
+        if self.vz:
+            nuevo["cod_propuesto"], nuevo["desc_propuesta"], _ = smg.codigo_propuesto(lin["cod_practica"], nuevo["especialidad"])
+            cod = nuevo["cod_propuesto"]
+            v, regla, per, _ = self.vz.valor(lin["fecha_prestacion"], cod, nuevo["categoria"], nuevo["especialidad"],
+                                             lin["periodo"], nuevo["desc_propuesta"] or lin["descripcion"] or "")
+            origen = f"grilla {per} · {regla}"
+        else:
+            cod, per = lin.get("cod_propuesto") or lin["cod_practica"], lin["periodo"]
+            if lin["periodo"] not in self.grillas:
+                self.grillas[lin["periodo"]] = Grilla(self.os, lin["periodo"])
+            g = self.grillas[lin["periodo"]]
+            v, origen = g.valor(cod, nuevo["categoria"]), f"grilla {g.periodo}"
+        vo, vig = valor_otros(self.os, cod, per, nuevo["categoria"])
+        if vo:
+            v, origen = vo, f"Valores · Otros (vigencia {vig})"
+        if not v:
+            return None, "sin valor en la grilla ni en Otros"
+        nuevo.update(valor_unit=v, valor_grilla=v, origen_valor=origen, total=round(v * (lin["cantidad"] or 1), 2))
+        campos = ("especialidad", "categoria", "resp_fiscal", "cod_propuesto", "desc_propuesta", "valor_unit",
+                  "valor_grilla", "origen_valor", "total")
+        return nuevo, {k: {"antes": lin[k], "despues": nuevo[k]} for k in campos if lin[k] != nuevo[k]}
+
+
+def codigos_difieren(lin):
+    """True si el código propuesto es distinto del que trae el archivo validado."""
+    p = lin.get("cod_propuesto")
+    return bool(p) and _clave_cod(p) != _clave_cod(lin.get("cod_practica"))
+
+
+def aplicar_codigo(lin, codigo):
+    """Al procesar se elige qué código queda: el del archivo o el propuesto. Devuelve (línea, cambió)."""
+    if codigo != "propuesto" or not codigos_difieren(lin):
+        return lin, False
+    nuevo = dict(lin)
+    nuevo["cod_practica"] = lin["cod_propuesto"]
+    if lin.get("desc_propuesta"):
+        nuevo["descripcion"] = lin["desc_propuesta"]
+    return nuevo, True
 
 
 def aplicar_fuente(lin, fuente):
@@ -718,6 +945,26 @@ def aplicar_fuente(lin, fuente):
     nuevo["total"] = round(v * (lin["cantidad"] or 1), 2)
     nuevo["origen_valor"] = "archivo validado" if fuente == "archivo" else "grilla"
     return nuevo, True
+
+
+def reiniciar_prefacturacion(os_key):
+    """Borra todas las líneas que están en pre-facturación de una obra social, para empezar de nuevo.
+    No toca lo que ya está en Facturación ni en templates."""
+    with db.tx() as c:
+        info = dict(c.execute("SELECT COUNT(*) n, COALESCE(SUM(total),0) total FROM lineas WHERE os=? AND estado='prefact'",
+                              (os_key,)).fetchone())
+        c.execute("DELETE FROM lineas WHERE os=? AND estado='prefact'", (os_key,))
+        # los archivos se pueden volver a importar
+        c.execute("DELETE FROM importaciones WHERE os=?", (os_key,))
+    return {"lineas": info["n"], "importe": round(info["total"], 2)}
+
+
+def quitar_evweb(os_key):
+    """Borra todo lo extraído de EVWEB para una obra social."""
+    with db.tx() as c:
+        n = c.execute("DELETE FROM evweb_filas WHERE os=?", (os_key,)).rowcount
+        c.execute("DELETE FROM evweb_extracciones WHERE os=?", (os_key,))
+    return {"filas": n}
 
 
 def validar_para_procesar(lin):
@@ -753,7 +1000,8 @@ def _fila_template(l, fpres):
     cod = int(cod) if cod.isdigit() and not cod.startswith("0") else cod
     cant = l["cantidad"] or 1
     return [l["cuenta"], str(l["afiliado_numero"] or ""), (l["afiliado_nombre"] or "").upper(), fp, cod,
-            int(cant) if cant == int(cant) else cant, 0, None, round(l["total"] or 0, 2), 0, 0, 0, 0, 0, None, 0,
+            int(cant) if cant == int(cant) else cant, 0, None, round(l["total"] or 0, 2), 0, 0, 0, 0, 0, None,
+            int(l.get("iva") or 0),
             None, None, fpres, None, None, str(l["nro_transaccion"] or "") or None]
 
 

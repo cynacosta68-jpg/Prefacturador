@@ -102,6 +102,15 @@ CREATE TABLE IF NOT EXISTS importaciones (
 );
 CREATE INDEX IF NOT EXISTS ix_imp ON importaciones(os, hash);
 
+-- Valores cargados a mano para prestaciones que la grilla no trae (solapa «Otros» de Valores)
+CREATE TABLE IF NOT EXISTS otros_valores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    os TEXT NOT NULL, codigo TEXT NOT NULL, descripcion TEXT,
+    vigencia TEXT NOT NULL,            -- MMAAAA desde el que rige el valor
+    valor REAL, valor_r REAL           -- todas las categorías / categoría R
+);
+CREATE INDEX IF NOT EXISTS ix_otros ON otros_valores(os, codigo);
+
 CREATE TABLE IF NOT EXISTS templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     os TEXT NOT NULL, periodo TEXT NOT NULL, nn INTEGER,
@@ -130,6 +139,23 @@ def conn():
         for nueva in ("valor_archivo", "valor_grilla"):     # valor unitario según el archivo validado y según la grilla
             if nueva not in cols:
                 _conn.execute(f"ALTER TABLE lineas ADD COLUMN {nueva} REAL")
+        if "iva" not in cols:            # SWISS MEDICAL: IVA del template y código de obra social de la línea
+            _conn.execute("ALTER TABLE lineas ADD COLUMN iva INTEGER")
+            _conn.execute("ALTER TABLE lineas ADD COLUMN os_codigo TEXT")
+        if "resp_fiscal" not in cols:    # condición del profesional y del afiliado, para filtrar y asignar IVA en bloque
+            _conn.execute("ALTER TABLE lineas ADD COLUMN resp_fiscal TEXT")
+            _conn.execute("ALTER TABLE lineas ADD COLUMN cond_afiliado TEXT")
+            _conn.execute("UPDATE lineas SET resp_fiscal=(SELECT p.resp_fiscal FROM profesionales p WHERE p.os=lineas.os "
+                          "AND p.cuit=lineas.cuit AND p.cuit<>'' LIMIT 1)")
+        if "cod_propuesto" not in cols:  # código que propone la aplicación (según especialidad); el del archivo no se toca
+            _conn.execute("ALTER TABLE lineas ADD COLUMN cod_propuesto TEXT")
+            _conn.execute("ALTER TABLE lineas ADD COLUMN desc_propuesta TEXT")
+            _conn.execute("UPDATE lineas SET cod_propuesto=cod_practica")
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(profesionales)").fetchall()]
+        if "codigo_iva" not in cols:     # código de IVA: depende de la responsabilidad fiscal (Responsable Inscripto = 1)
+            _conn.execute("ALTER TABLE profesionales ADD COLUMN efector TEXT")
+            _conn.execute("ALTER TABLE profesionales ADD COLUMN codigo_iva INTEGER")
+            _conn.execute("UPDATE profesionales SET codigo_iva=CASE WHEN LOWER(TRIM(resp_fiscal))='responsable inscripto' THEN 1 ELSE 0 END")
         cols = [r[1] for r in _conn.execute("PRAGMA table_info(evweb_filas)").fetchall()]
         if "fecha" not in cols:      # fecha de la prestación (AAAA-MM-DD) para filtrar y archivar
             _conn.execute("ALTER TABLE evweb_filas ADD COLUMN fecha TEXT")

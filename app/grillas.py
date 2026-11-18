@@ -101,8 +101,19 @@ def rol_de(texto):
     if n in ("avalian", "galeno", "sancor", "prestador"):
         return "otro"
     if n in ("descripcion", "concepto", "conceptos", "nomenclador", "especialidades", "practica", "practicas",
-             "capitulo practica"):
+             "capitulo practica", "prestacion", "prestaciones", "prestacion cirujano", "prestaciones a valor fijo"):
         return "desc"
+    m = re.match(r"^cirujano ([abc])$", n)
+    if m:
+        return "cat_" + m.group(1).upper()
+    if n in ("calculo valor honorario", "honorarios cx certificados"):
+        return "valor"
+    if n == "honorarios cx re certificados":
+        return "valor_R"                   # segunda columna de valor: profesionales recertificados
+    if n == "u cir":
+        return "unid"
+    if n == "u ayu":
+        return "otro"
     if re.match(r"^(nivel|niveles|complejidad|complejidades|comp|compl)$", n) or n.startswith("complejidad unidades"):
         return "nivel"
     m = re.match(r"^hon(orarios?)? cat ([abc])$", n)
@@ -359,6 +370,9 @@ class Hoja:
                         break
             elif cod and not parece_codigo(f[roles["cod"]]) and not re.match(r"^\d", cod):
                 cod = ""
+            if cpp and " " in cpp and len(cpp) > 12 and not parece_codigo(f[roles["cod_pp"]]):
+                excl.discard(roles["cod_pp"])      # la columna titulada "Cod." trae en realidad la descripción
+                cpp = ""
             desc_cands = [(j, v) for j, v in textos if j not in excl and j not in self.mascara
                           and limpiar_codigo(v) not in (cod, cpp) and not parece_codigo(v)
                           and norm(v) not in ("honorarios", "gastos", "honorarios y gastos", "horarios")]
@@ -506,6 +520,9 @@ class Hoja:
                     nuevas.append({**base, "categoria": c, "valor_grilla": v})
             else:
                 nuevas.append(base)
+                jr = roles.get("valor_R")
+                if jr is not None and es_num(f[jr]) and float(f[jr]) > 0:
+                    nuevas.append({**base, "categoria": "R", "valor_grilla": float(f[jr])})
                 if segundo:
                     nuevas.append({**base, "valor_grilla": segundo, "_segundo": True})
             self.prest.extend(nuevas)
@@ -564,6 +581,8 @@ class Hoja:
             # si la solapa declara una unidad casi igual, es esa misma con otro redondeo: conserva su nombre
             decl = next((x for x in grupo[0]["_act"] if abs(x["valor"] - razon) <= razon * 0.005), None)
             tipo = decl["tipo"] if decl else "Unidad" + (f" · categoría {cat}" if cat else "")
+            if not decl and all(p["categoria"] == "R" for p in grupo):
+                tipo += " · recertificados"
             nueva = dict(especialidad=esp, tipo=tipo, valor=razon, origen="deducida", hoja=self.nombre,
                          fila=grupo[0]["fila"], n=0, cat=cat)
             if decl and decl["n"] == 0:

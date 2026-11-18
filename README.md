@@ -91,6 +91,65 @@ gasto + aparatología **menos el coseguro** de esa transacción (columna `Copago
 N° de transacción y práctica; se guarda al pre-facturar o se sube en Presentaciones), tipo de matrícula 1 (provincial), N° de matrícula = MP del padrón, especialidad = la del profesional en el padrón, honorarios/gastos 0-1-2.
 La base de GALENO no trae MP: se toma la del mismo CUIT en los padrones de SANCOR / AVALIAN, o se carga en Padrón.
 
+## SWISS MEDICAL (códigos 11060 y 11062)
+
+El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-facturación lo valoriza.
+
+- **Bot EVWEB**: extrae primero el código 11062 (I.V.A.) y después el 11060, y acumula ambos en «Datos extraídos».
+- **Padrón**: el profesional se busca por el **CUIT del efector**. De ahí salen cuenta, especialidad, categoría,
+  el IVA del template y el código de obra social (11062 si es Responsable Inscripto, 11060 si no).
+- **Valores**: acepta la grilla de Swiss (Excel con una solapa por especialidad) o la base estructurada del
+  proceso anterior (solapas Nomenclador, unidades y Valor Fijos).
+- **Reporte**: se aceptan los dos formatos de encabezados (el anterior y el actual).
+- **Valorización con la grilla**:
+  - Prácticas: por código. Si la solapa tiene columnas Cirujano A / B / C se usa la categoría del profesional;
+    si tiene valor para recertificados se usa cuando la categoría es R.
+  - Consultas (códigos 42…): la grilla las lista por tipo y no por código. Reglas (contrastadas con la
+    facturación emitida de octubre 2026): pediatras → Consulta PEDIATRA; «Consulta médica en consultorio»
+    de clínica médica, medicina interna, geriatría, cardiología, cirugía general y gastroenterología →
+    CONSULTA CLINICOS; reumatología, infectología y psiquiatría → su renglón; el resto (incluye Médico y
+    Medicina General) → Consulta A / B / C especialistas según la categoría.
+  - Categoría R: cobra el valor recertificado (también los especialistas, que no tienen renglón propio).
+  - El código del reporte es el de Swiss (SMMP): manda esa columna de la grilla y no la del código del Colegio.
+  - Si el código figura en dos solapas con valores distintos se toma el primero y queda anotado.
+- **IVA**: el padrón tiene «Código de IVA», que sale siempre de la responsabilidad fiscal (Responsable
+  Inscripto = 1, el resto = 0). La línea lleva IVA 1 solo si el profesional tiene código 1 y el afiliado es
+  Gravado. En Pre-facturación y Facturación se puede filtrar por condición del profesional y del afiliado,
+  «Seleccionar las filtradas» y «Asignar IVA» (1 = calcula IVA, 0 = no calcula IVA) en bloque.
+- **ARCA (vía Arcanum)**: «Padrón → Actualizar condición desde ARCA» consulta en ARCA la Constancia de
+  Inscripción de cada profesional (por CUIT), y actualiza la responsabilidad fiscal y el código de IVA de los
+  que cambiaron. Hace copia de seguridad antes, corre en segundo plano y al terminar muestra los cambios, los
+  CUIT sin dato y los que no se pudieron consultar. No da de alta ni de baja profesionales. En el formulario
+  de cada profesional hay un botón «Consultar ARCA» para un solo CUIT. Usa el mismo Arcanum que el Portal de
+  Cuentas a Pagar: variables `ARCANUM_URL` (en el mismo proyecto de Easypanel, `http://arcanum:8094`),
+  `ARCANUM_API_KEY` y `ARCANUM_CUIT` (CUIT del certificado cargado en Arcanum).
+- **Otros (Valores → solapa «Otros»)**: valores cargados a mano, que **mandan sobre la grilla**: sirven para
+  prestaciones que la grilla no trae y para corregir un valor sin tocar la grilla. Cada
+  fila tiene código, descripción, vigencia desde (MMAAAA), valor para todas las categorías y valor para la
+  categoría R (vacío = igual al general). La pre-facturación usa la vigencia más reciente que no supere el mes de la prestación; si el código
+  no está en «Otros», usa la grilla. Cuando reemplaza un valor de la grilla, la línea lo deja anotado. Para un valor nuevo se agrega otra fila con la nueva
+  vigencia. Se puede agregar, editar, importar y exportar en Excel (columnas Código, Descripción, Vigencia,
+  Valor, Valor R). Vale para todas las obras sociales.
+- **Código 29010230** (Polisomnografía sin CPAP): figura en dos solapas; se usa el valor de Neurología.
+- **Código propuesto** (SWISS): la línea conserva el código del archivo validado («Cód. archivo») y al lado muestra
+  el «Cód. propuesto» por la aplicación, con la leyenda «Difieren cód.» o «Coinciden códigos» (se puede filtrar
+  por esa leyenda). Se propone otro código cuando el archivo trae una consulta (4201…) que no es la de la
+  especialidad del profesional —la genérica 42010100 o la de otra especialidad— y esa especialidad tiene código
+  propio; y para los códigos que se facturan con otro (180101 → 18010301, 290102 → 29010203). El valor se
+  calcula siempre con el código propuesto. Al **Procesar**, si alguna línea difiere, se pregunta si queda el
+  código del archivo o el propuesto. La consulta de Pediatría hecha por una especialidad infantil se valoriza
+  como consulta de pediatra.
+- **Revalorizar seleccionadas** (Pre-facturación y Facturación): con las líneas elegidas —o todas las filtradas—
+  se puede (a) volver a valorizar con lo cargado ahora (categoría y especialidad del padrón, grilla y «Otros»),
+  útil después de corregir el padrón o los valores; (b) asignar un mismo valor unitario a todas; o (c) aplicar
+  un incremento % sobre el valor de cada una. Informa cuántas cambiaron y el importe antes y después.
+- **Incremento %**: al modificar una línea (o varias a la vez) en Pre-facturación o Facturación se puede indicar
+  un porcentaje sobre el valor unitario (negativo = descuento). Queda anotado en el origen del valor, en la
+  observación de la línea y en la auditoría.
+- **Pre-facturación**: «Cruzar y valorizar según grilla» (sin EVWEB), «Cruzar y validar según EVWEB» y «Reiniciar».
+- **Datos extraídos EVWEB** (todas las obras sociales): botón «Quitar datos EVWEB»; si no se usa, el archivo
+  del día 20 los retira solo.
+
 ## Auditoría
 
 Cada acción queda registrada con fecha, usuario, IP, obra social y detalle: ingresos (correctos, fallidos y

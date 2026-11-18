@@ -18,7 +18,7 @@ const SECCIONES = [
   ["present", "Presentaciones", null],
 ];
 const ICO = {izq: `<svg class="ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg>`, der: `<svg class="ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>`, ok: `<svg class="ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 8.5 3.2 3.2L13 5"/></svg>`, volver: `<svg class="ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3 2.5 8 7 13M3 8h10.5"/></svg>`};
-const NOMBRES = { AVALIAN: "AVALIAN", SANCOR: "SANCOR", GALENO: "GALENO" };
+const NOMBRES = { AVALIAN: "AVALIAN", SANCOR: "SANCOR", GALENO: "GALENO", SWISS: "SWISS MEDICAL" };
 
 const S = {
   os: null, sec: "padron",
@@ -148,7 +148,7 @@ async function iniciar() {
   pantalla("inicio");
   $("#quien").textContent = `${S.me.nombre || S.me.usuario} · ${S.me.rol === "admin" ? "Administrador" : "Operador"}`;
   $("#adminZona").classList.toggle("oculto", S.me.rol !== "admin");
-  $("#tarjetasOS").innerHTML = ["AVALIAN", "SANCOR", "GALENO"].map(k => {
+  $("#tarjetasOS").innerHTML = Object.keys(NOMBRES).filter(k => S.me.obras[k]).map(k => {
     const r = S.me.resumen[k];
     return `<button data-os="${k}"><strong>${NOMBRES[k]}</strong><small>${esc(S.me.obras[k].nombre)}</small>
       <span class="datos"><span><b>${miles(r.prefact)}</b>en pre-facturación</span><span><b>${miles(r.facturacion)}</b>en facturación</span><span><b>${miles(r.templates)}</b>templates</span></span></button>`;
@@ -275,12 +275,14 @@ VISTAS.padron = async () => {
   S.filas = filas;
   const cols = [{ k: "cuenta", t: "Cuenta" }, { k: "nombre", t: "Profesional" }, { k: "cuit", t: "CUIT" },
     { k: "especialidad", t: "Especialidad" }, { k: "categoria", t: "Categoría" }, { k: "resp_fiscal", t: "Resp. fiscal" },
-    { k: "matricula", t: "Matrícula (MP)" }];
+    { k: "matricula", t: "Matrícula (MP)" }, { k: "efector", t: "Efector" },
+    { k: "codigo_iva", t: "Código de IVA", f: f => `<span class="et ${f.codigo_iva ? "ok" : ""}">${f.codigo_iva ? "1" : "0"}</span>` }];
   $("#vista").innerHTML = `
     <div class="barra">
       <label>Buscar<input id="q" value="${esc(q)}" placeholder="Nombre, cuenta, CUIT, matrícula…"></label>
       <span class="suave">${miles(filas.length)} profesionales</span><span class="sep"></span>
       <button class="btn" id="nuevo">+ Agregar</button>
+      <button class="btn primario" id="pArca" title="Consulta en ARCA la condición fiscal de cada profesional">Actualizar condición desde ARCA</button>
       <label class="btn">Importar base (.xlsx)<input type="file" id="arch" accept=".xlsx,.xls,.csv" class="oculto"></label>
       <a class="btn" href="/api/padron/exportar?os=${S.os}">Exportar Excel</a>
     </div>
@@ -293,13 +295,61 @@ VISTAS.padron = async () => {
     if (filas.length && !await confirmar(`Se reemplaza el padrón de ${S.os} (${filas.length} profesionales) por el archivo. ¿Continuar?`, "Reemplazar")) return;
     try { const r = await subir("/api/padron/importar", { os: S.os }, a); toast(`${r.importados} profesionales importados`); ir("padron"); } catch (err) { fallo(err); }
   };
+  // Actualización de la responsabilidad fiscal con ARCA (a través de Arcanum): corre en segundo plano
+  const informeArca = j => {
+    const lista = (t, xs, f) => xs.length ? `<p class="suave">${t}</p><pre class="log">${esc(xs.map(f).join("\n"))}</pre>` : "";
+    modal(`<h3>${j.estado === "error" ? "La actualización desde ARCA se interrumpió" : "Padrón actualizado con ARCA"}</h3>
+      ${j.error ? `<div class="aviso mal sinMargen" role="alert">${esc(j.error)}</div>` : ""}
+      <dl class="detalleFila">
+        <div><dt>CUIT consultados</dt><dd>${miles(j.hechos)} de ${miles(j.total)}</dd></div>
+        <div><dt>Con cambio de condición</dt><dd>${miles(j.n_cambios)}</dd></div>
+        <div><dt>Sin dato en ARCA</dt><dd>${miles(j.n_sin_datos)}</dd></div>
+        <div><dt>No se pudieron consultar</dt><dd>${miles(j.n_errores)}</dd></div>
+        ${j.sin_cuit ? `<div><dt>Sin CUIT en el padrón</dt><dd>${miles(j.sin_cuit)}</dd></div>` : ""}
+      </dl>
+      ${lista("Cambios aplicados (responsabilidad fiscal y código de IVA):", j.cambios, c => `${c.profesional} (${c.cuit}): ${c.antes || "—"} → ${c.despues} · código de IVA ${c.codigo_iva}`)}
+      ${lista("Sin dato en ARCA (se dejó lo que estaba cargado):", j.sin_datos, c => `${c.profesional} (${c.cuit}): ${c.motivo}`)}
+      ${lista("No se pudieron consultar:", j.errores, c => `${c.profesional} (${c.cuit}): ${c.motivo}`)}
+      <div class="pie"><button class="btn primario" data-cerrar>Cerrar</button></div>`);
+  };
+  const seguirArca = async () => {
+    const b = $("#pArca"); if (!b) return;
+    try {
+      const { job } = await api("/api/padron/arca?os=" + S.os);
+      if (!job) return;
+      if (job.estado === "corriendo") {
+        b.disabled = true; b.textContent = `Consultando ARCA… ${miles(job.hechos)} de ${miles(job.total)}`;
+        setTimeout(seguirArca, 2000);
+      } else if (b.disabled) { await VISTAS.padron(); informeArca(job); }
+    } catch (err) { fallo(err); }
+  };
+  $("#pArca").onclick = async () => {
+    if (!await confirmar(`Se va a consultar en ARCA la condición fiscal de los ${miles(filas.length)} profesionales de ${NOMBRES[S.os]} y actualizar la responsabilidad fiscal y el código de IVA de los que hayan cambiado. Antes se hace una copia de seguridad. ¿Actualizar?`, "Actualizar")) return;
+    try { await api("/api/padron/arca", { json: { os: S.os } }); $("#pArca").disabled = true; seguirArca(); } catch (err) { fallo(err); }
+  };
+  seguirArca();
   const form = f => {
     const campos = [["cuenta", "Cuenta"], ["nombre", "Profesional"], ["cuit", "CUIT"], ["especialidad", "Especialidad"],
-      ["categoria", "Categoría"], ["resp_fiscal", "Responsabilidad fiscal"], ["matricula", "Matrícula (MP)"]];
+      ["categoria", "Categoría"], ["resp_fiscal", "Responsabilidad fiscal"], ["matricula", "Matrícula (MP)"], ["efector", "Efector"]];
     modal(`<h3>${f ? "Editar profesional" : "Agregar profesional"}</h3><form id="fp"><div class="rejilla">
-      ${campos.map(([k, t]) => `<label>${t}<input name="${k}" value="${esc(f ? f[k] : "")}"></label>`).join("")}</div>
-      <div class="pie">${f ? `<button type="button" class="btn peligro" id="pBorrar">Eliminar</button>` : ""}<span class="sep"></span>
+      ${campos.map(([k, t]) => `<label>${t}<input name="${k}" value="${esc(f ? (f[k] || "") : "")}"></label>`).join("")}</div>
+      <p class="suave">El código de IVA se calcula solo: 1 si la responsabilidad fiscal es «Responsable Inscripto», 0 en los demás casos.</p>
+      <div class="pie">${f ? `<button type="button" class="btn peligro" id="pBorrar">Eliminar</button>` : ""}
+      <button type="button" class="btn" id="pArcaUno">Consultar ARCA</button><span class="sep"></span>
       <button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Guardar</button></div></form>`);
+    // Trae de ARCA la condición fiscal del CUIT cargado y la deja en el formulario (se guarda con «Guardar»)
+    $("#pArcaUno").onclick = async () => {
+      const fp = $("#fp"), cuit = fp.elements.cuit.value.replace(/\D/g, "");
+      if (cuit.length !== 11) return toast("Cargá un CUIT de 11 dígitos", true);
+      const b = $("#pArcaUno"); b.disabled = true; b.textContent = "Consultando…";
+      try {
+        const r = await api("/api/padron/arca/" + cuit);
+        if (r.resp_fiscal) { fp.elements.resp_fiscal.value = r.resp_fiscal; toast(`ARCA: ${r.resp_fiscal} · código de IVA ${r.codigo_iva}`); }
+        else toast("ARCA no informa la condición frente al IVA" + (r.observacion ? ": " + r.observacion : ""), true);
+        if (r.razon_social && !fp.elements.nombre.value) fp.elements.nombre.value = r.razon_social;
+      } catch (err) { fallo(err); }
+      b.disabled = false; b.textContent = "Consultar ARCA";
+    };
     $("#fp").onsubmit = async e => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(e.target)); d.os = S.os;
@@ -333,19 +383,21 @@ VISTAS.valores = async () => {
   ];
   const opc = (v, t, sel) => `<option value="${esc(v)}" ${String(v) === String(sel || "") ? "selected" : ""}>${esc(t)}</option>`;
   $("#vista").innerHTML = `
-    <div class="tarjeta bloque"><h3>Subir grilla de ${S.os}</h3>
+    <div class="tarjeta bloque"><h3>${S.os === "SWISS" ? "Subir grilla de valores de SWISS MEDICAL" : "Subir grilla de " + NOMBRES[S.os]}</h3>
       <div class="fila">
-        <label>Período de la grilla (MMAAAA)<input id="gPer" value="${esc(per || periodoPorDefecto())}" maxlength="6" size="8"></label>
-        <label>Archivo de la grilla (Excel con todas las solapas)<input type="file" id="gArch" accept=".xlsx,.xls"></label>
+        <label class="${S.os === "SWISS" ? "oculto" : ""}">Período de la grilla (MMAAAA)<input id="gPer" value="${esc(per || periodoPorDefecto())}" maxlength="6" size="8"></label>
+        <label>${S.os === "SWISS" ? "Grilla de valores (Excel con una solapa por especialidad) o base de valorización (Nomenclador, unidades y Valor Fijos)" : "Archivo de la grilla (Excel con todas las solapas)"}<input type="file" id="gArch" accept=".xlsx,.xls"></label>
         <button class="btn primario" id="gSubir">Subir y extraer</button>
         ${per ? `<span class="sep"></span><button class="btn" id="gCopiar">Nuevo período a partir de ${per}</button>` : ""}
       </div><div id="gRes"></div>
     </div>
     ${per ? `
     <div class="pestanas" role="tablist">
-      <button role="tab" aria-selected="${F.tab !== "unid"}" class="${F.tab !== "unid" ? "activo" : ""}" data-tab="prest">Valores</button>
+      <button role="tab" aria-selected="${F.tab !== "unid" && F.tab !== "otros"}" class="${F.tab !== "unid" && F.tab !== "otros" ? "activo" : ""}" data-tab="prest">Valores</button>
       <button role="tab" aria-selected="${F.tab === "unid"}" class="${F.tab === "unid" ? "activo" : ""}" data-tab="unid">Unidades <b>${miles(d.unidades.length)}</b></button>
+      <button role="tab" aria-selected="${F.tab === "otros"}" class="${F.tab === "otros" ? "activo" : ""}" data-tab="otros">Otros</button>
     </div>
+    <div id="gCuerpo">
     <div class="banda"><div class="kpis">
       <div class="kpi"><span>Prestaciones</span><b>${miles(d.total)}</b></div>
       <div class="kpi"><span>Por unidad</span><b>${miles(d.por_unidad)}</b></div>
@@ -375,6 +427,7 @@ VISTAS.valores = async () => {
       ${paginador(d.total)}
     </div>
     ${tabla(cols, d.filas, { vacio: "Sin prestaciones para ese filtro.", acciones: f => f.tipo_valor === "fijo" ? `<button class="btn mini" data-fijo="${f.id}">Cambiar valor</button>` : "" })}`}
+    </div>
 ` : `<div class="tabla"><div class="vacio">Todavía no hay grillas cargadas para esta obra social. Subí el Excel de la grilla tal como lo entrega la obra social.</div></div>`}`;
 
   const recargar = () => VISTAS.valores().catch(fallo);
@@ -401,6 +454,52 @@ VISTAS.valores = async () => {
     };
   };
   $$("[data-tab]").forEach(b => b.onclick = () => { F.tab = b.dataset.tab; F.unidad = ""; S.pagina = 0; recargar(); });
+  // Solapa «Otros»: valores cargados a mano para prestaciones que la grilla no trae
+  if (F.tab === "otros") {
+    const { filas: otros } = await api("/api/otros?os=" + S.os);
+    const monto = v => v ? pesos(v) : `<span class="et mal">completar</span>`;
+    $("#gCuerpo").innerHTML = `
+      <div class="barra">
+        <span class="suave">Valores cargados a mano: mandan sobre la grilla. Sirven para prestaciones que la grilla no trae y para corregir un valor sin tocarla. El valor rige desde la vigencia indicada; para un valor nuevo agregá otra fila con la nueva vigencia. La categoría R usa «Valor R» si está cargado.</span>
+        <span class="sep"></span>
+        <button class="btn primario" id="oNuevo">+ Agregar</button>
+        <label class="btn">Importar Excel<input type="file" id="oArch" accept=".xlsx,.xls,.csv" class="oculto"></label>
+        <a class="btn" href="/api/otros/exportar?os=${S.os}">Exportar Excel</a>
+      </div>
+      ${tabla([
+        { k: "codigo", t: "Código", f: x => `<b>${esc(x.codigo)}</b>` }, { k: "descripcion", t: "Descripción" },
+        { k: "vigencia", t: "Vigencia desde" },
+        { k: "valor", t: "Valor · todas las categorías", num: true, f: x => monto(x.valor) },
+        { k: "valor_r", t: "Valor · categoría R", num: true, f: x => x.valor_r ? pesos(x.valor_r) : `<span class="suave">igual al general</span>` },
+      ], otros, { vacio: "Todavía no hay valores cargados a mano.", acciones: x => `<button class="btn mini" data-otro="${x.id}">Editar</button>` })}`;
+    const formOtro = x => {
+      const v = n => n ? String(n).replace(".", ",") : "";
+      modal(`<h3>${x ? "Editar valor" : "Agregar valor"}</h3><form id="fo"><div class="rejilla">
+        <label>Código de prestación<input name="codigo" value="${esc(x ? x.codigo : "")}" required></label>
+        <label>Vigencia desde (MMAAAA)<input name="vigencia" value="${esc(x ? x.vigencia : (per || periodoPorDefecto()))}" maxlength="6" required pattern="(0[1-9]|1[0-2])[0-9]{4}"></label>
+        <label>Descripción<input name="descripcion" value="${esc(x ? x.descripcion || "" : "")}"></label>
+        <label>Valor · todas las categorías<input name="valor" value="${esc(x ? v(x.valor) : "")}" inputmode="decimal"></label>
+        <label>Valor · categoría R (vacío = igual al general)<input name="valor_r" value="${esc(x ? v(x.valor_r) : "")}" inputmode="decimal"></label></div>
+        <div class="pie">${x ? `<button type="button" class="btn peligro" id="oBorrar">Eliminar</button>` : ""}<span class="sep"></span>
+        <button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Guardar</button></div></form>`);
+      $("#fo").onsubmit = async e => {
+        e.preventDefault();
+        const d = Object.fromEntries(new FormData(e.target)); d.os = S.os;
+        try { await api(x ? "/api/otros/" + x.id : "/api/otros", { method: x ? "PUT" : "POST", json: d }); cerrarModal(); toast("Guardado"); recargar(); } catch (err) { fallo(err); }
+      };
+      if (x) $("#oBorrar").onclick = async () => {
+        if (!await confirmar(`¿Eliminar el valor del código ${x.codigo} (vigencia ${x.vigencia})?`, "Eliminar", "peligro")) return;
+        try { await api("/api/otros/" + x.id, { method: "DELETE" }); cerrarModal(); recargar(); } catch (err) { fallo(err); }
+      };
+    };
+    $("#oNuevo").onclick = () => formOtro(null);
+    $$("[data-otro]").forEach(b => b.onclick = () => formOtro(otros.find(x => x.id === +b.dataset.otro)));
+    $("#oArch").onchange = async e => {
+      const a = e.target.files[0]; if (!a) return;
+      try { const r = await subir("/api/otros/importar", { os: S.os }, a); toast(`${miles(r.nuevos)} valor(es) agregados · ${miles(r.actualizados)} actualizados`); recargar(); } catch (err) { fallo(err); }
+    };
+    return;
+  }
   if ($("#pLim")) enlazarPaginador(recargar);
   $("#fPer").onchange = e => { S.filtros = { periodo: e.target.value, tab: F.tab }; S.pagina = 0; recargar(); };
   $("#fEsp").onchange = e => { F.esp = e.target.value; F.unidad = ""; S.pagina = 0; recargar(); };
@@ -452,6 +551,7 @@ VISTAS.bot = async () => {
           <label>Fecha de carga desde<input type="date" id="bDesde" value="${iso(ini)}"></label>
           <label>Fecha de carga hasta<input type="date" id="bHasta" value="${iso(hoy)}"></label>
         </div>
+        ${S.os === "SWISS" ? `<p class="suave">SWISS MEDICAL tiene dos códigos: el bot extrae primero 11062 (I.V.A.) y después 11060, y acumula ambos en Datos extraídos EVWEB.</p>` : ""}
         <p class="suave" id="bTramos"></p>
       </div>
       <div class="tarjeta"><h3>Credenciales EVWEB</h3>
@@ -524,11 +624,18 @@ VISTAS.evweb = async () => {
       ${filtrosBusqueda(F, d.profesionales)}
       ${paginador(d.total)}<span class="sep"></span>
       <a class="btn primario" href="/api/evweb/exportar?${qs(par)}">Exportar Excel</a>
+      ${d.rango.n ? `<button class="btn peligro" id="evQuitar">Quitar datos EVWEB</button>` : ""}
     </div>
     ${tabla(cols, d.filas, { vacio: d.rango.n ? "Ninguna fila coincide con los filtros." : "Todavía no hay datos extraídos de EVWEB para esta obra social. Usá la sección Bot EVWEB." })}
     <p class="suave">${d.total ? "Hacé doble clic en una fila para ver todo su detalle. " : ""}${d.rango.n ? `En vista: ${miles(d.rango.n)} filas, prestaciones del ${fecha(d.rango.d)} al ${fecha(d.rango.h)}. ` : ""}El día 20 de cada mes se archivan los datos hasta el período ${esc(d.archivar_hasta)} y se quitan de esta vista; el administrador los descarga desde Inicio → Archivo.</p>
     ${d.extracciones.length ? `<p class="suave">Últimas extracciones: ${d.extracciones.slice(0, 6).map(e => `${esc(e.fecha)} (${esc(e.origen)}${e.desde ? ` ${esc(e.desde)}→${esc(e.hasta)}` : ""}: ${miles(e.filas)} filas, ${miles(e.nuevas)} nuevas)`).join(" · ")}</p>` : ""}`;
   const recargar = () => VISTAS.evweb().catch(fallo);
+  if ($("#evQuitar")) $("#evQuitar").onclick = async () => {
+    const ok = await confirmar(`ATENCIÓN: se van a borrar las ${miles(d.rango.n)} filas extraídas de EVWEB para ${NOMBRES[S.os]}. `
+      + "No se puede deshacer desde la aplicación. Si no las borrás, se archivan solas el día 20. ¿Borrar todo ahora?", "Borrar todo", "peligro");
+    if (!ok) return;
+    try { const r = await api("/api/evweb?os=" + S.os, { method: "DELETE" }); toast(`${miles(r.filas)} filas de EVWEB borradas`); S.filtros = {}; contadores(); recargar(); } catch (err) { fallo(err); }
+  };
   // Doble clic (o Enter con la fila enfocada) abre el detalle completo de la fila. Solo lectura.
   const detalle = i => {
     const f = d.filas[i]; if (!f) return;
@@ -555,10 +662,13 @@ VISTAS.evweb = async () => {
 /* ───────────── líneas (pre-facturación y facturación) ───────────── */
 
 const COLS_LINEA = [
-  { k: "cruce", t: "Cruce", f: f => `<span class="et ${f.cruce === "OK" ? "ok" : f.cruce === "MANUAL" ? "avi" : "mal"}">${esc(f.cruce)}</span>` },
+  { k: "cruce", t: "Cruce", f: f => `<span class="et ${f.cruce === "OK" || f.cruce === "GRILLA" ? "ok" : f.cruce === "MANUAL" ? "avi" : "mal"}">${esc(f.cruce)}</span>` },
   { k: "periodo", t: "Período" }, { k: "nro_transaccion", t: "N° transacción" }, { k: "fecha_prestacion", t: "Fecha" },
   { k: "afiliado_numero", t: "N° afiliado" }, { k: "afiliado_nombre", t: "Afiliado" },
-  { k: "cod_practica", t: "Cód. prestación" }, { k: "descripcion", t: "Prestación" }, { k: "cantidad", t: "Cant.", num: true },
+  { k: "cod_practica", t: "Cód. archivo" },
+  { k: "cod_propuesto", t: "Cód. propuesto", f: f => f.codigos === "Difieren cód." ? `<b title="${esc(f.desc_propuesta || "")}">${esc(f.cod_propuesto)}</b>` : esc(f.cod_propuesto || f.cod_practica) },
+  { k: "codigos", t: "Códigos", f: f => `<span class="et ${f.codigos === "Difieren cód." ? "avi" : "ok"}">${esc(f.codigos || "")}</span>` },
+  { k: "descripcion", t: "Prestación" }, { k: "cantidad", t: "Cant.", num: true },
   { k: "cuenta", t: "Cuenta" }, { k: "matricula", t: "Matrícula" }, { k: "profesional", t: "Profesional" },
   { k: "especialidad", t: "Especialidad" }, { k: "categoria", t: "Cat." },
   { k: "valor_unit", t: "Valor unit.", num: true, f: f => f.valor_unit ? pesos(f.valor_unit) : `<span class="et mal">sin valor</span>` },
@@ -579,21 +689,31 @@ function editarLinea(f, recargar) {
     ["cuenta", "Cuenta"], ["matricula", "Matrícula"], ["profesional", "Profesional"], ["cuit", "CUIT"],
     ["especialidad", "Especialidad"], ["categoria", "Categoría"], ["observacion", "Observación"]];
   modal(`<h3>Modificar línea · transacción ${esc(f.nro_transaccion)}</h3>
-    <form id="fl"><div class="rejilla">${campos.map(([k, t]) => `<label>${t}<input name="${k}" value="${esc(f[k])}"></label>`).join("")}</div>
+    <form id="fl"><div class="rejilla">${campos.map(([k, t]) => `<label>${t}<input name="${k}" value="${esc(f[k])}"></label>`).join("")}
+      <label>Incremento % sobre el valor unitario<input name="incremento" id="lInc" inputmode="decimal" placeholder="Ej: 20 (negativo = descuento)"></label></div>
+    <p class="suave" id="lIncVista"></p>
     <p><label class="enLinea"><input type="checkbox" id="auto" checked>
       Al cambiar cuenta o matrícula, completar el profesional desde el padrón; al cambiar código o categoría, tomar el valor de la grilla</label></p>
     <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Guardar</button></div></form>`);
+  // Vista previa del incremento: valor actual → valor con el porcentaje aplicado
+  const fl = $("#fl");
+  const vistaInc = () => {
+    const p = Number(String($("#lInc").value).trim().replace(",", ".")), base = Number(String(fl.elements.valor_unit.value).replace(",", "."));
+    $("#lIncVista").textContent = p && base ? `Valor unitario ${pesos(base)} ${p > 0 ? "+" : "−"} ${Math.abs(p)} % = ${pesos(Math.round(base * (1 + p / 100) * 100) / 100)}. Queda anotado en la línea y en la auditoría.` : "";
+  };
+  $("#lInc").oninput = vistaInc; fl.elements.valor_unit.oninput = vistaInc;
   $("#fl").onsubmit = async e => {
     e.preventDefault();
     const d = Object.fromEntries(new FormData(e.target)), cambios = {};
     for (const [k] of campos) if (String(d[k]).trim() !== String(f[k] ?? "").trim()) cambios[k] = d[k];
+    if (String(d.incremento || "").trim()) cambios.incremento = String(d.incremento).trim().replace(",", ".");
     if (!Object.keys(cambios).length) return cerrarModal();
     try { await api("/api/lineas/" + f.id, { method: "PUT", json: { cambios, autocompletar: $("#auto").checked } }); cerrarModal(); toast("Línea actualizada"); recargar(); } catch (err) { fallo(err); }
   };
 }
 
 function edicionMasiva(recargar) {
-  const campos = [["cuenta", "Cuenta"], ["matricula", "Matrícula"], ["cod_practica", "Código de prestación"], ["valor_unit", "Valor unitario"], ["categoria", "Categoría"], ["periodo", "Período (MMAAAA)"]];
+  const campos = [["cuenta", "Cuenta"], ["matricula", "Matrícula"], ["cod_practica", "Código de prestación"], ["valor_unit", "Valor unitario"], ["incremento", "Incremento % sobre el valor (ej: 20)"], ["categoria", "Categoría"], ["periodo", "Período (MMAAAA)"]];
   modal(`<h3>Modificar ${S.sel.size} línea(s) seleccionada(s)</h3><p class="suave">Completá solo lo que quieras cambiar; lo vacío no se toca.</p>
     <form id="fm"><div class="rejilla">${campos.map(([k, t]) => `<label>${t}<input name="${k}"></label>`).join("")}</div>
     <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Aplicar</button></div></form>`);
@@ -643,12 +763,30 @@ function procesarConFuente(ids, recargar) {
     </div>
     <p class="suave">Las líneas que no tengan valor en la fuente elegida, y las que tienen un valor cargado a mano, conservan el valor que muestran ahora.${fuera ? ` Hay ${miles(fuera)} línea(s) seleccionada(s) en otras páginas: los totales de arriba son solo de las que están en pantalla.` : ""}</p>
     <div class="pie"><button class="btn" data-cerrar>Cancelar</button></div>`);
-  $$(".opcion").forEach(b => b.onclick = () => { cerrarModal(); accion("procesar", ids, recargar, "enviada(s) a Facturación", { fuente: b.dataset.fuente }); });
+  $$(".opcion").forEach(b => b.onclick = async () => {
+    cerrarModal();
+    const fuente = b.dataset.fuente;
+    // Si alguna línea tiene código propuesto distinto del archivo, se pregunta cuál queda
+    let r = { difieren: 0, cambios: [] };
+    try { r = await api("/api/lineas/resumen", { json: { os: S.os, ids } }); } catch (err) { return fallo(err); }
+    if (!r.difieren) return accion("procesar", ids, recargar, "enviada(s) a Facturación", { fuente, codigo: "archivo" });
+    modal(`<h3>¿Qué código de prestación dejar?</h3>
+      <p>En ${miles(r.difieren)} de las ${miles(ids.length)} línea(s) el código propuesto difiere del código del archivo validado.</p>
+      <div class="opciones">
+        <button class="opcion" data-codigo="archivo"><b>Código del archivo</b><small>Deja el código tal como vino en el archivo validado</small></button>
+        <button class="opcion" data-codigo="propuesto"><b>Código propuesto</b><small>Reemplaza el código por el propuesto en esas ${miles(r.difieren)} línea(s)</small></button>
+      </div>
+      <p class="suave">Cambios propuestos: ${esc(r.cambios.map(([k, n]) => `${k} (${miles(n)})`).join(" · "))}. El valor de la línea no cambia con esta elección.</p>
+      <div class="pie"><button class="btn" data-cerrar>Cancelar</button></div>`);
+    $$("[data-codigo]").forEach(c => c.onclick = () => { cerrarModal(); accion("procesar", ids, recargar, "enviada(s) a Facturación", { fuente, codigo: c.dataset.codigo }); });
+  });
 }
 
 async function vistaLineas(estado, cfg) {
   const F = S.filtros;
-  const par = { os: S.os, estado, periodo: F.periodo || "", q: F.q || "", cruce: F.cruce || "", prof: F.prof || "", nro: F.nro || "" };
+  const par = { os: S.os, estado, periodo: F.periodo || "", q: F.q || "", cruce: F.cruce || "", prof: F.prof || "", nro: F.nro || "", rf: F.rf || "", afil: F.afil || "", cods: F.cods || "" };
+  const conIva = estado !== "template";
+  const opcCond = (lista, sel) => lista.map(c => `<option value="${esc(c)}" ${c === sel ? "selected" : ""}>${c === "-" ? "Sin dato" : esc(c)}</option>`).join("");
   const d = await api("/api/lineas?" + qs({ ...par, limite: S.limite, desde: S.pagina * S.limite }));
   S.filas = d.filas;
   const recargar = () => vistaLineas(estado, cfg).catch(fallo);
@@ -657,16 +795,82 @@ async function vistaLineas(estado, cfg) {
       <div class="kpi"><span>Importe</span><b>${pesos(d.importe)}</b></div>
       ${estado === "prefact" ? `<div class="kpi"><span>Listas para procesar</span><b>${miles(d.listas)}</b></div><div class="kpi"><span>A revisar</span><b>${miles(d.total - d.listas)}</b></div>` : ""}
       <div class="kpi"><span>Seleccionadas</span><b id="nSel">0</b></div></div>
-      <div class="acciones">${cfg.masivas}</div></div>
+      <div class="acciones">${cfg.masivas}${conIva ? `<button class="btn" data-masiva id="mReval">Revalorizar seleccionadas</button><button class="btn" data-masiva id="mIva">Asignar IVA</button>` : ""}</div></div>
     <div class="filtros">
       <label>Período<select id="fPer"><option value="">Todos</option>${d.periodos.map(p => `<option ${p === F.periodo ? "selected" : ""}>${p}</option>`).join("")}</select></label>
-      ${estado === "prefact" ? `<label>Cruce<select id="fCru"><option value="">Todos</option>${["OK", "MANUAL", "SIN EVWEB", "SIN PADRON"].map(c => `<option ${c === F.cruce ? "selected" : ""}>${c}</option>`).join("")}</select></label>` : ""}
+      ${estado === "prefact" ? `<label>Cruce<select id="fCru"><option value="">Todos</option>${["OK", ...(S.os === "SWISS" ? ["GRILLA"] : []), "MANUAL", "SIN EVWEB", "SIN PADRON"].map(c => `<option ${c === F.cruce ? "selected" : ""}>${c}</option>`).join("")}</select></label>` : ""}
+      ${d.cond_prof.some(c => c !== "-") ? `<label>Condición del profesional<select id="fRf"><option value="">Todas</option>${opcCond(d.cond_prof, F.rf)}</select></label>` : ""}
+      ${d.cond_afil.some(c => c !== "-") ? `<label>Condición del afiliado<select id="fAfil"><option value="">Todas</option>${opcCond(d.cond_afil, F.afil)}</select></label>` : ""}
+      ${d.difieren || F.cods ? `<label>Códigos<select id="fCods"><option value="">Todos</option><option value="difieren" ${F.cods === "difieren" ? "selected" : ""}>Difieren cód. (${miles(d.difieren)})</option><option value="coinciden" ${F.cods === "coinciden" ? "selected" : ""}>Coinciden códigos</option></select></label>` : ""}
       ${filtrosBusqueda(F, d.profesionales)}
       ${paginador(d.total)}<span class="sep"></span>
+      ${conIva && d.total ? `<button class="btn" id="selFiltradas">Seleccionar las ${miles(d.total)} filtradas</button>` : ""}
       <a class="btn" href="/api/lineas/exportar?${qs(par)}">Exportar Excel</a>
     </div>
-    ${tabla(COLS_LINEA, d.filas, { sel: true, vacio: (F.prof || F.nro || F.q || F.periodo || F.cruce) ? "Ninguna línea coincide con los filtros." : cfg.vacio, acciones: cfg.acciones })}`;
+    ${tabla([...COLS_LINEA.slice(0, -1),
+      ...(S.os === "SWISS" ? [{ k: "os_codigo", t: "Cód. OS" }] : []),
+      { k: "resp_fiscal", t: "Cond. profesional" },
+      ...(d.cond_afil.some(c => c !== "-") ? [{ k: "cond_afiliado", t: "Cond. afiliado" }] : []),
+      { k: "iva", t: "IVA", f: f => f.iva === null || f.iva === undefined ? "" : `<span class="et ${f.iva ? "ok" : ""}">${esc(f.iva)}</span>` },
+      COLS_LINEA[COLS_LINEA.length - 1]], d.filas, { sel: true, vacio: (F.prof || F.nro || F.q || F.periodo || F.cruce || F.rf || F.afil) ? "Ninguna línea coincide con los filtros." : cfg.vacio, acciones: cfg.acciones })}`;
   enlazarPaginador(recargar);
+  if ($("#fRf")) $("#fRf").onchange = e => { F.rf = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
+  if ($("#fAfil")) $("#fAfil").onchange = e => { F.afil = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
+  if ($("#fCods")) $("#fCods").onchange = e => { F.cods = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
+  // Selección masiva: todas las líneas que cumplen los filtros, no solo las de la página
+  if ($("#selFiltradas")) $("#selFiltradas").onclick = async () => {
+    try {
+      const r = await api("/api/lineas?" + qs({ ...par, solo_ids: 1 }));
+      S.sel.clear(); r.ids.forEach(i => S.sel.add(i));
+      toast(`${miles(r.ids.length)} línea(s) seleccionada(s)`); recargar();
+    } catch (err) { fallo(err); }
+  };
+  // Revalorización en bloque: volver a valorizar, asignar un valor o aplicar un incremento
+  if ($("#mReval")) $("#mReval").onclick = () => {
+    const n = S.sel.size;
+    modal(`<h3>Revalorizar ${miles(n)} línea(s) seleccionada(s)</h3>
+      <div class="opciones">
+        <button class="opcion" id="rvGrilla"><b>Volver a valorizar</b><small>Recalcula cada línea con lo cargado ahora: categoría y especialidad del padrón, grilla de valores y «Otros». Reemplaza también los valores puestos a mano.</small></button>
+      </div>
+      <form id="frv"><div class="rejilla">
+        <label>Asignar este valor unitario a todas<input name="valor_unit" inputmode="decimal" placeholder="Ej: 42680,25"></label>
+        <label>O aplicar un incremento % sobre el valor de cada una<input name="incremento" inputmode="decimal" placeholder="Ej: 20 (negativo = descuento)"></label></div>
+        <p class="suave">Completá uno solo de los dos campos. El total de cada línea se recalcula con su cantidad. Queda registrado en la auditoría.</p>
+        <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Aplicar valor</button></div></form>`);
+    $("#rvGrilla").onclick = async () => {
+      cerrarModal();
+      try {
+        const r = await api("/api/lineas/accion", { json: { os: S.os, accion: "revalorizar", ids: [...S.sel] } });
+        contadores(); recargar();
+        modal(`<h3>Revalorización terminada</h3>
+          <dl class="detalleFila">
+            <div><dt>Revalorizadas</dt><dd>${miles(r.hechas)}</dd></div><div><dt>Con cambios</dt><dd>${miles(r.cambiaron)}</dd></div>
+            <div><dt>Sin cambios</dt><dd>${miles(r.sin_cambio)}</dd></div><div><dt>Sin valor (no se tocaron)</dt><dd>${miles(r.n_omitidas)}</dd></div>
+            <div><dt>Importe de las que cambiaron</dt><dd>${pesos(r.importe_antes)} → ${pesos(r.importe_despues)}</dd></div>
+          </dl>
+          <div class="pie"><button class="btn primario" data-cerrar>Cerrar</button></div>`);
+      } catch (err) { fallo(err); }
+    };
+    $("#frv").onsubmit = async e => {
+      e.preventDefault();
+      const d = Object.fromEntries(new FormData(e.target)), v = String(d.valor_unit).trim(), inc = String(d.incremento).trim();
+      if (!v && !inc) return toast("Completá el valor o el incremento", true);
+      if (v && inc) return toast("Completá solo uno: valor o incremento", true);
+      const cambios = v ? { valor_unit: v } : { incremento: inc.replace(",", ".") };
+      try { const r = await api("/api/lineas/accion", { json: { os: S.os, accion: "editar", ids: [...S.sel], cambios } }); cerrarModal(); informe(r, v ? "con el valor asignado" : "con el incremento aplicado"); contadores(); recargar(); } catch (err) { fallo(err); }
+    };
+  };
+  // IVA en bloque: 1 = calcula IVA, 0 = no calcula IVA
+  if ($("#mIva")) $("#mIva").onclick = () => {
+    modal(`<h3>Asignar IVA a ${miles(S.sel.size)} línea(s)</h3>
+      <p class="suave">Se cambia solo el IVA de las líneas seleccionadas. Queda registrado en la auditoría.</p>
+      <div class="opciones">
+        <button class="opcion" data-iva="1"><b>1 · Calcula IVA</b><span>El template lleva IVA en estas líneas.</span></button>
+        <button class="opcion" data-iva="0"><b>0 · No calcula IVA</b><span>El template va sin IVA en estas líneas.</span></button>
+      </div>
+      <div class="pie"><button class="btn" data-cerrar>Cancelar</button></div>`);
+    $$("[data-iva]").forEach(b => b.onclick = () => { cerrarModal(); accion("iva", [...S.sel], recargar, "con IVA " + b.dataset.iva, { iva: +b.dataset.iva }); });
+  };
   $("#fPer").onchange = e => { F.periodo = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fCru")) $("#fCru").onchange = e => { F.cruce = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   enlazarBusqueda(F, () => vistaLineas(estado, cfg));
@@ -686,15 +890,27 @@ VISTAS.prefact = async () => {
       <div class="fila">
         <label>Archivo de prestaciones validadas<input type="file" id="pArch" accept=".xlsx,.xls,.csv"></label>
         <label>Período de pre-facturación (MMAAAA)<input id="pPer" value="${periodoPorDefecto()}" maxlength="6" size="8"></label>
-        <button class="btn primario" id="pIniciar">Comenzar a prefacturar</button>
-      </div><div id="pRes"></div>
+        ${S.os === "SWISS"
+          ? `<button class="btn primario" id="pIniciar" data-modo="grilla">Cruzar y valorizar según grilla</button>
+             <button class="btn primario" id="pIniciar2" data-modo="evweb">Cruzar y validar según EVWEB</button>`
+          : `<button class="btn primario" id="pIniciar" data-modo="evweb">Comenzar a prefacturar</button>`}
+        <span class="sep"></span>
+        <button class="btn peligro" id="pReiniciar">Reiniciar</button>
+      </div>
+      ${S.os === "SWISS" ? `<p class="suave sinMargen">El reporte de SWISS MEDICAL no viene valorizado. <b>Según grilla</b>: toma el profesional por el CUIT del efector y valoriza con la grilla de valores cargada en «Valores», sin usar EVWEB. <b>Según EVWEB</b>: además cruza cada transacción con lo extraído de EVWEB (códigos 11062 y 11060) y marca las que no estén; el valor sale igual de la base.</p>` : ""}
+      <div id="pRes"></div>
     </div><div id="lista"></div>`;
-  const importar = async (a, periodo, soloNuevas) => {
-    const b = $("#pIniciar"); b.disabled = true; b.setAttribute("aria-busy", "true"); b.textContent = "Cruzando…";
+  const etiquetas = {};
+  $$("#pIniciar, #pIniciar2").forEach(b => { etiquetas[b.id] = b.textContent; });
+  const importar = async (a, periodo, soloNuevas, modo) => {
+    const botones = $$("#pIniciar, #pIniciar2");
+    const b = botones.find(x => x.dataset.modo === modo) || botones[0];
+    botones.forEach(x => { x.disabled = true; });
+    b.setAttribute("aria-busy", "true"); b.textContent = "Cruzando…";
     try {
-      const r = await subir("/api/prefacturar", { os: S.os, periodo, solo_nuevas: soloNuevas ? "1" : "" }, a);
+      const r = await subir("/api/prefacturar", { os: S.os, periodo, solo_nuevas: soloNuevas ? "1" : "", modo }, a);
       $("#pRes").innerHTML = `<div class="aviso sinMargen ${r.sin_evweb || r.sin_padron ? "" : "ok"}">
-        ${miles(r.insertadas)} línea(s) incorporadas de ${miles(r.total)} del archivo · cruce OK: ${miles(r.ok)} · sin EVWEB: ${miles(r.sin_evweb)} · sin padrón: ${miles(r.sin_padron)} · sin valor: ${miles(r.sin_valor)}
+        ${r.modo ? (r.modo === "grilla" ? "Cruce y valorización según grilla · " : "Cruce y validación según EVWEB · ") : ""}${miles(r.insertadas)} línea(s) incorporadas de ${miles(r.total)} del archivo · ${r.modo === "grilla" ? "con profesional" : "cruce OK"}: ${miles(r.ok)}${r.modo === "grilla" ? "" : ` · sin EVWEB: ${miles(r.sin_evweb)}`} · sin padrón: ${miles(r.sin_padron)} · sin valor${r.modo ? " (a revisar)" : ""}: ${miles(r.sin_valor)}
         ${r.duplicadas ? ` · ya cargadas antes (omitidas): ${miles(r.duplicadas)}` : ""}${r.anuladas ? ` · anuladas (omitidas): ${miles(r.anuladas)}` : ""}
         ${r.grilla_periodo ? ` · grilla usada: ${r.grilla_periodo}` : " · sin grilla de valores cargada"}
         · ahora hay ${miles(r.en_prefacturacion)} línea(s) acumuladas en pre-facturación</div>`;
@@ -717,14 +933,27 @@ VISTAS.prefact = async () => {
           <p class="suave">${dup.nuevas ? "Si es un archivo distinto que se superpone con uno anterior, podés importar solo las transacciones nuevas; las repetidas se dejan como están." : "Todas las transacciones del archivo ya estaban cargadas: no hay nada nuevo para importar."}</p>
           <div class="pie"><button class="btn" data-cerrar>Cerrar</button>
             ${dup.nuevas ? `<button class="btn primario" id="soloNuevas">Importar solo las ${miles(dup.nuevas)} nuevas</button>` : ""}</div>`);
-        if ($("#soloNuevas")) $("#soloNuevas").onclick = () => { cerrarModal(); importar(a, periodo, true); };
+        if ($("#soloNuevas")) $("#soloNuevas").onclick = () => { cerrarModal(); importar(a, periodo, true, modo); };
       }
     }
-    b.disabled = false; b.removeAttribute("aria-busy"); b.textContent = "Comenzar a prefacturar";
+    botones.forEach(x => { x.disabled = false; x.textContent = etiquetas[x.id]; });
+    b.removeAttribute("aria-busy");
   };
-  $("#pIniciar").onclick = () => {
+  $$("#pIniciar, #pIniciar2").forEach(b => b.onclick = () => {
     const a = $("#pArch").files[0]; if (!a) return toast("Elegí el archivo de prestaciones validadas", true);
-    importar(a, $("#pPer").value, false);
+    importar(a, $("#pPer").value, false, b.dataset.modo);
+  });
+  // Reiniciar: borra lo que está en pre-facturación para empezar de nuevo
+  $("#pReiniciar").onclick = async () => {
+    const ok = await confirmar(`ATENCIÓN: se van a borrar TODAS las líneas que están en Pre-facturación de ${NOMBRES[S.os]}, `
+      + "incluidas las correcciones hechas a mano. Lo que ya está en Facturación o en templates no se toca. ¿Reiniciar?", "Reiniciar", "peligro");
+    if (!ok) return;
+    try {
+      const r = await api("/api/prefacturar/reiniciar", { json: { os: S.os } });
+      S.sel.clear(); S.filtros = {}; S.pagina = 0;
+      $("#pRes").innerHTML = `<div class="aviso info sinMargen" role="status">Pre-facturación reiniciada: se borraron ${miles(r.lineas)} línea(s) por ${pesos(r.importe)}. Podés volver a subir los archivos.</div>`;
+      contadores(); cargar();
+    } catch (err) { fallo(err); }
   };
   const cargar = () => vistaLineas("prefact", {
     vacio: "No hay líneas en pre-facturación. Subí el archivo de prestaciones validadas y presioná «Comenzar a prefacturar».",
@@ -793,6 +1022,14 @@ VISTAS.templates = async () => {
 
 VISTAS.present = async () => {
   const link = S.me.links[S.os];
+  if (S.os === "SWISS") {
+    $("#subtitulo").textContent = "SWISS MEDICAL todavía no tiene un conversor de presentación definido.";
+    $("#vista").innerHTML = `<div class="tarjeta"><h3>Presentación de SWISS MEDICAL</h3>
+      <p>Para esta obra social no hay un formato de presentación cargado. El template se genera desde Facturación y se descarga desde Templates, igual que en las demás.</p>
+      ${link ? `<p><a class="enlace" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(link)}</a></p>
+      <a class="btn primario" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Ir al portal de SWISS MEDICAL</a>` : `<p class="suave">Cuando se defina el formato o el enlace del portal, se agregan acá.</p>`}</div>`;
+    return;
+  }
   if (S.os === "AVALIAN") {
     $("#subtitulo").textContent = "AVALIAN no requiere conversión: la presentación se hace directamente en el portal.";
     $("#vista").innerHTML = `<div class="tarjeta"><h3>Portal de prestadores AVALIAN</h3>
@@ -904,7 +1141,7 @@ VISTAS.archivo = async () => {
     <div class="aviso info">Se archivan los datos extraídos de EVWEB y las líneas ya emitidas en templates, del período ${esc(d.periodo)} y anteriores. Lo que sigue pendiente en Pre-facturación y Facturación no se toca. Antes de quitar nada se hace una copia de seguridad completa. Los archivos quedan en el servidor: descargalos y guardalos fuera.</div>
     <div class="tarjeta bloque"><h3>Archivar ahora</h3>
       <form id="fAr" class="fila">
-        <label>Obra social<select name="os">${["AVALIAN", "SANCOR", "GALENO"].map(o => `<option>${o}</option>`).join("")}</select></label>
+        <label>Obra social<select name="os">${Object.keys(NOMBRES).map(o => `<option value="${o}">${NOMBRES[o]}</option>`).join("")}</select></label>
         <label>Hasta el período (MMAAAA)<input name="periodo" value="${esc(d.periodo)}" maxlength="6" size="8" required></label>
         <button class="btn primario">Archivar</button>
       </form>
