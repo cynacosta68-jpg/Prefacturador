@@ -100,8 +100,24 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
   (columna «Efector» del padrón = «Código de Prestador Efector» del reporte), que es como se asignan los
   profesionales que facturan a través de una sociedad. De ahí salen cuenta, especialidad, categoría,
   el IVA del template y el código de obra social (11062 si es Responsable Inscripto, 11060 si no).
-- **Valores**: acepta la grilla de Swiss (Excel con una solapa por especialidad) o la base estructurada del
-  proceso anterior (solapas Nomenclador, unidades y Valor Fijos).
+- **Valores**: la base de valorización de SWISS tiene dos partes, que quedan consolidadas en la solapa «Valores»:
+  - **Valores fijos**: el reporte que sale del sistema (Nomenclador, Cod, Descripción, Arancel, Honorario, Gasto,
+    Total prestación). Se sube cada mes indicando la **vigencia** (MMAAAA); reemplaza los valores fijos de ese período.
+  - **Valores por unidades**: la tabla «Valor en unidades» (unidades del cirujano por código y tipo de nomenclador)
+    y la tabla «unidades» (valor de cada unidad, que se carga cada mes con su vigencia, por archivo o editándola en
+    la solapa «Unidades»). El valor es unidades × valor de la unidad; se recalcula al cambiar una unidad o con
+    «Actualizar valores por unidades». «Nuevo período a partir de…» copia un período para cargarle los valores nuevos.
+  - Se acepta también el Excel con las tres tablas juntas y varios períodos. Si el archivo trae su columna de
+    período, manda esa; si no, la vigencia indicada al subir.
+  - Si un período no tiene base cargada, se usa la grilla por especialidad (una solapa por especialidad).
+- **Cómo se valoriza con la base** (contrastado con la facturación emitida de octubre 2026):
+  1. Por unidades, si el código está en «Valor en unidades» bajo el nomenclador de la especialidad del profesional
+     (con la unidad de su categoría: Traumatología A / B / C, Ginecología recertificados para R).
+  2. Valores fijos del código: fila de la categoría del profesional con descripción «SMG» → valor fijo sin
+     categoría (VF) → fila de la categoría → fila C si el profesional es R y no hay fila R. La «Consulta médica
+     en consultorio» usa «consulta clínica médica» para clínica médica, medicina interna y geriatría, y «consulta
+     médica» para el resto. En radiología (capítulo 34) se factura el honorario, sin el gasto.
+  3. Lo cargado en «Otros» manda sobre todo lo anterior.
 - **Reporte**: se aceptan los dos formatos de encabezados (el anterior y el actual).
 - **Valorización con la grilla**:
   - Prácticas: por código. Si la solapa tiene columnas Cirujano A / B / C se usa la categoría del profesional;
@@ -157,12 +173,19 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
 - **Borrar valores en bloque**: en Valores, tanto en la solapa «Valores» (prestaciones de la grilla) como en «Otros»,
   se tildan las filas —o la casilla de la cabecera para todas las de la página— y «Eliminar seleccionadas».
   Pide confirmación y deja en la auditoría lo que se borró.
+- **Presentaciones (SWISS)**: conversor del «PrestacionesExport»: agrega la columna **MP** (matrícula del padrón) al
+  lado de Matricula, igual que SANCOR, y la columna **Total** a continuación de IVA = (Honorario − coseguro de esa
+  transacción) × 1,105 si IVA es 1, o sin multiplicar si es 0. El coseguro es la columna Copago del reporte de
+  liquidación, cruzada por número de transacción: se toma del reporte cargado en Pre-facturación o del que se
+  suba en el momento. Informa honorarios, coseguros descontados, filas con IVA y total; avisa las transacciones
+  sin cruce y las que tienen un coseguro mayor al honorario (quedan en 0 para revisar).
+- **Templates**: un solo template con todas las líneas seleccionadas, sin dividir por cantidad de filas.
 - **Incremento %**: al modificar una línea (o varias a la vez) en Pre-facturación o Facturación se puede indicar
   un porcentaje sobre el valor unitario (negativo = descuento). Queda anotado en el origen del valor, en la
   observación de la línea y en la auditoría.
 - **Pre-facturación**: «Cruzar y valorizar según grilla» (sin EVWEB), «Cruzar y validar según EVWEB» y «Reiniciar».
 - **Datos extraídos EVWEB** (todas las obras sociales): botón «Quitar datos EVWEB»; si no se usa, el archivo
-  del día 20 los retira solo.
+  del día 25 los retira solo.
 
 ## Auditoría
 
@@ -188,8 +211,8 @@ administradores).
 
 ## Archivo mensual
 
-El período de un mes se presenta hasta el día 15 del mes siguiente; por eso, el **día 20** de cada mes (`ARCHIVE_DAY`)
-la aplicación archiva sola el período anterior y todo lo más viejo: octubre se archiva el 20 de noviembre.
+El período de un mes se presenta hasta el día 15 del mes siguiente; por eso, el **día 25** de cada mes (`ARCHIVE_DAY`)
+la aplicación archiva sola el período anterior y todo lo más viejo: octubre se archiva el 25 de noviembre.
 
 - Se archivan los **datos extraídos de EVWEB** (por fecha de prestación) y las **líneas ya emitidas en templates**.
   Lo que sigue pendiente en Pre-facturación o Facturación no se toca; los templates siguen descargables.

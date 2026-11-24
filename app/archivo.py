@@ -1,4 +1,4 @@
-"""Archivo mensual: el día 20 se copian a un Excel y se quitan de la vista los datos
+"""Archivo mensual: el día 25 se copian a un Excel y se quitan de la vista los datos
 del período ya presentado (el de octubre se presenta hasta el 15 de noviembre: el 20
 de noviembre se archiva octubre y todo lo anterior)."""
 import io
@@ -12,7 +12,7 @@ import pandas as pd
 from . import db, logic, seguridad
 
 ARCHIVO_DIR = os.path.join(db.DATA_DIR, "archivo")
-DIA_ARCHIVO = int(os.environ.get("ARCHIVE_DAY", "20"))
+DIA_ARCHIVO = int(os.environ.get("ARCHIVE_DAY", "25"))
 _RE = re.compile(r"^Archivo_(AVALIAN|SANCOR|GALENO|SWISS)_hasta_\d{6}_\d{8}_\d{6}\.xlsx$")
 
 
@@ -109,7 +109,7 @@ def ruta(nombre):
 
 
 def automatico():
-    """Lo llama el ciclo de mantenimiento: desde el día 20, archiva el período anterior."""
+    """Lo llama el ciclo de mantenimiento: desde el día 25, archiva el período anterior."""
     if date.today().day < DIA_ARCHIVO:
         return
     periodo = periodo_a_archivar()

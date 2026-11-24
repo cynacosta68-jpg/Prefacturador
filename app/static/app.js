@@ -382,7 +382,7 @@ VISTAS.padron = async () => {
 /* ───────────── Valores ───────────── */
 
 VISTAS.valores = async () => {
-  $("#subtitulo").textContent = "Grilla normalizada: todas las solapas del Excel unificadas. En «Unidades» están los valores por unidad, que son los que se cambian cada período.";
+  $("#subtitulo").textContent = S.os === "SWISS" ? "Valores fijos (reporte del sistema) y valores por unidades (unidades × valor de la unidad), consolidados por período de vigencia. En «Unidades» se cargan los valores de cada unidad." : "Grilla normalizada: todas las solapas del Excel unificadas. En «Unidades» están los valores por unidad, que son los que se cambian cada período.";
   const meta = await api("/api/valores/meta?os=" + S.os);
   const F = S.filtros;
   const per = F.periodo && meta.periodos.includes(F.periodo) ? F.periodo : (meta.periodos[0] || "");
@@ -401,11 +401,12 @@ VISTAS.valores = async () => {
   ];
   const opc = (v, t, sel) => `<option value="${esc(v)}" ${String(v) === String(sel || "") ? "selected" : ""}>${esc(t)}</option>`;
   $("#vista").innerHTML = `
-    <div class="tarjeta bloque"><h3>${S.os === "SWISS" ? "Subir grilla de valores de SWISS MEDICAL" : "Subir grilla de " + NOMBRES[S.os]}</h3>
+    <div class="tarjeta bloque"><h3>${S.os === "SWISS" ? "Actualizar valores de SWISS MEDICAL" : "Subir grilla de " + NOMBRES[S.os]}</h3>
+      ${S.os === "SWISS" ? `<p class="suave sinMargen">Subí el <b>reporte de valores fijos</b> que sale del sistema, la tabla <b>unidades</b> (valor de cada unidad) o la tabla <b>Valor en unidades</b> (unidades por prestación); también se acepta el Excel con las tres juntas. La vigencia indicada se usa cuando el archivo no trae su propia columna de período. Los valores fijos y los valores por unidades (unidades × valor de la unidad) quedan consolidados en la solapa «Valores».</p>` : ""}
       <div class="fila">
-        <label class="${S.os === "SWISS" ? "oculto" : ""}">Período de la grilla (MMAAAA)<input id="gPer" value="${esc(per || periodoPorDefecto())}" maxlength="6" size="8"></label>
-        <label>${S.os === "SWISS" ? "Grilla de valores (Excel con una solapa por especialidad) o base de valorización (Nomenclador, unidades y Valor Fijos)" : "Archivo de la grilla (Excel con todas las solapas)"}<input type="file" id="gArch" accept=".xlsx,.xls"></label>
-        <button class="btn primario" id="gSubir">Subir y extraer</button>
+        <label>${S.os === "SWISS" ? "Vigencia de los valores (MMAAAA)" : "Período de la grilla (MMAAAA)"}<input id="gPer" value="${esc(S.os === "SWISS" ? periodoPorDefecto() : (per || periodoPorDefecto()))}" maxlength="6" size="8"></label>
+        <label>${S.os === "SWISS" ? "Archivo (valores fijos, unidades, Valor en unidades, o la base completa)" : "Archivo de la grilla (Excel con todas las solapas)"}<input type="file" id="gArch" accept=".xlsx,.xls"></label>
+        <button class="btn primario" id="gSubir">${S.os === "SWISS" ? "Subir y actualizar" : "Subir y extraer"}</button>
         ${per ? `<span class="sep"></span><button class="btn" id="gCopiar">Nuevo período a partir de ${per}</button>` : ""}
       </div><div id="gRes"></div>
     </div>
@@ -428,6 +429,7 @@ VISTAS.valores = async () => {
       <label>Período<select id="fPer">${meta.periodos.map(p => opc(p, p, per)).join("")}</select></label>
       <label>Especialidad<select id="fEsp">${opc("", "Todas", F.esp)}${(meta.especialidades[per] || []).map(e => opc(e, e, F.esp)).join("")}</select></label>
       <span class="suave">Al cambiar un valor se recalculan todas las prestaciones que usan esa unidad (unidades × valor).</span>
+      <span class="sep"></span><button class="btn primario" id="uRecalc">Actualizar valores por unidades</button>
     </div>
     ${tabla([
       { k: "especialidad", t: "Especialidad" }, { k: "tipo_unidad", t: "Tipo de unidad", f: x => `<b>${esc(x.tipo_unidad)}</b>` },
@@ -534,6 +536,12 @@ VISTAS.valores = async () => {
   if ($("#fTipo")) $("#fTipo").onchange = e => { F.tipo = e.target.value; S.pagina = 0; recargar(); };
   if ($("#q")) $("#q").oninput = conDemora(e => { F.q = e.target.value; S.pagina = 0; VISTAS.valores().then(() => { const i = $("#q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }).catch(fallo); });
   if ($("#uQuitar")) $("#uQuitar").onclick = () => { F.unidad = ""; S.pagina = 0; recargar(); };
+  // Recalcula todo el período: valor de cada prestación por unidad = unidades × valor de su unidad
+  if ($("#uRecalc")) $("#uRecalc").onclick = async () => {
+    const b = $("#uRecalc"); b.disabled = true; b.textContent = "Actualizando…";
+    try { const r = await api("/api/valores/recalcular", { json: { os: S.os, periodo: per } }); toast(`${miles(r.recalculadas)} prestaciones recalculadas (unidades × valor de la unidad) para ${per}`); recargar(); }
+    catch (err) { fallo(err); b.disabled = false; b.textContent = "Actualizar valores por unidades"; }
+  };
   // Selección y borrado en bloque de prestaciones de la grilla
   if ($("#vElim")) {
     enlazarSeleccion(() => { $("#vElim").disabled = S.sel.size === 0; $("#vElim").textContent = S.sel.size ? `Eliminar ${miles(S.sel.size)} seleccionada(s)` : "Eliminar seleccionadas"; });
@@ -663,12 +671,12 @@ VISTAS.evweb = async () => {
       ${d.rango.n ? `<button class="btn peligro" id="evQuitar">Quitar datos EVWEB</button>` : ""}
     </div>
     ${tabla(cols, d.filas, { vacio: d.rango.n ? "Ninguna fila coincide con los filtros." : "Todavía no hay datos extraídos de EVWEB para esta obra social. Usá la sección Bot EVWEB." })}
-    <p class="suave">${d.total ? "Hacé doble clic en una fila para ver todo su detalle. " : ""}${d.rango.n ? `En vista: ${miles(d.rango.n)} filas, prestaciones del ${fecha(d.rango.d)} al ${fecha(d.rango.h)}. ` : ""}El día 20 de cada mes se archivan los datos hasta el período ${esc(d.archivar_hasta)} y se quitan de esta vista; el administrador los descarga desde Inicio → Archivo.</p>
+    <p class="suave">${d.total ? "Hacé doble clic en una fila para ver todo su detalle. " : ""}${d.rango.n ? `En vista: ${miles(d.rango.n)} filas, prestaciones del ${fecha(d.rango.d)} al ${fecha(d.rango.h)}. ` : ""}El día 25 de cada mes se archivan los datos hasta el período ${esc(d.archivar_hasta)} y se quitan de esta vista; el administrador los descarga desde Inicio → Archivo.</p>
     ${d.extracciones.length ? `<p class="suave">Últimas extracciones: ${d.extracciones.slice(0, 6).map(e => `${esc(e.fecha)} (${esc(e.origen)}${e.desde ? ` ${esc(e.desde)}→${esc(e.hasta)}` : ""}: ${miles(e.filas)} filas, ${miles(e.nuevas)} nuevas)`).join(" · ")}</p>` : ""}`;
   const recargar = () => VISTAS.evweb().catch(fallo);
   if ($("#evQuitar")) $("#evQuitar").onclick = async () => {
     const ok = await confirmar(`ATENCIÓN: se van a borrar las ${miles(d.rango.n)} filas extraídas de EVWEB para ${NOMBRES[S.os]}. `
-      + "No se puede deshacer desde la aplicación. Si no las borrás, se archivan solas el día 20. ¿Borrar todo ahora?", "Borrar todo", "peligro");
+      + "No se puede deshacer desde la aplicación. Si no las borrás, se archivan solas el día 25. ¿Borrar todo ahora?", "Borrar todo", "peligro");
     if (!ok) return;
     try { const r = await api("/api/evweb?os=" + S.os, { method: "DELETE" }); toast(`${miles(r.filas)} filas de EVWEB borradas`); S.filtros = {}; contadores(); recargar(); } catch (err) { fallo(err); }
   };
@@ -1068,14 +1076,6 @@ VISTAS.templates = async () => {
 
 VISTAS.present = async () => {
   const link = S.me.links[S.os];
-  if (S.os === "SWISS") {
-    $("#subtitulo").textContent = "SWISS MEDICAL todavía no tiene un conversor de presentación definido.";
-    $("#vista").innerHTML = `<div class="tarjeta"><h3>Presentación de SWISS MEDICAL</h3>
-      <p>Para esta obra social no hay un formato de presentación cargado. El template se genera desde Facturación y se descarga desde Templates, igual que en las demás.</p>
-      ${link ? `<p><a class="enlace" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(link)}</a></p>
-      <a class="btn primario" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Ir al portal de SWISS MEDICAL</a>` : `<p class="suave">Cuando se defina el formato o el enlace del portal, se agregan acá.</p>`}</div>`;
-    return;
-  }
   if (S.os === "AVALIAN") {
     $("#subtitulo").textContent = "AVALIAN no requiere conversión: la presentación se hace directamente en el portal.";
     $("#vista").innerHTML = `<div class="tarjeta"><h3>Portal de prestadores AVALIAN</h3>
@@ -1083,9 +1083,10 @@ VISTAS.present = async () => {
       <a class="btn primario" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Ir a AVALIAN</a></div>`;
     return;
   }
-  const galeno = S.os === "GALENO";
+  const galeno = S.os === "GALENO", swiss = S.os === "SWISS", conVal = galeno || swiss;
   $("#subtitulo").textContent = galeno
     ? "Convierte el archivo de facturación «PrestacionesExport» al formato PlanillaPrestaciones de GALENO."
+    : swiss ? "Agrega al «PrestacionesExport» la matrícula (MP) y la columna Total: honorario menos coseguro, con IVA cuando corresponde."
     : "Agrega al «PrestacionesExport» la columna MP (matrícula del padrón) a continuación de Matricula.";
   $("#vista").innerHTML = `
     <div class="tarjeta bloque"><h3>1 · Conversor ${NOMBRES[S.os]}</h3>
@@ -1093,16 +1094,16 @@ VISTAS.present = async () => {
         <label>Archivo «PrestacionesExport»<input type="file" id="cArch" accept=".xlsx,.xls,.csv"></label>
         <label>Período (MMAAAA)<input id="cPer" value="${periodoPorDefecto()}" maxlength="6" size="8"></label>
         <label>N° de factura (opcional)<input id="cFac" placeholder="0005-00004519" size="16"></label>
-        ${galeno ? `<label>Archivo validado de Galeno (coseguros, opcional)<input type="file" id="cVal" accept=".xlsx,.xls,.csv"></label>` : ""}
+        ${conVal ? `<label>${galeno ? "Archivo validado de Galeno" : "Reporte de liquidación de Swiss"} (coseguros, opcional)<input type="file" id="cVal" accept=".xlsx,.xls,.csv"></label>` : ""}
         <button class="btn primario" id="cIniciar">Iniciar conversor</button>
       </div>
-      <p class="suave">Si el export trae varias obras sociales, indicá el N° de factura de ${NOMBRES[S.os]} para convertir solo esas filas.${galeno ? " El importe del anexo es el total menos el coseguro de cada transacción; los coseguros se toman del archivo validado cargado en Pre-facturación, o del que subas acá." : ""}</p>
+      <p class="suave">Si el export trae varias obras sociales, indicá el N° de factura de ${NOMBRES[S.os]} para convertir solo esas filas.${galeno ? " El importe del anexo es el total menos el coseguro de cada transacción; los coseguros se toman del archivo validado cargado en Pre-facturación, o del que subas acá." : ""}${swiss ? " Se agrega la columna MP al lado de Matricula y la columna Total a continuación de IVA: Honorario menos el coseguro de esa transacción (se busca por número de transacción en el reporte de liquidación cargado en Pre-facturación, o en el que subas acá), multiplicado por 1,105 cuando IVA es 1." : ""}</p>
       <div id="cRes"></div>
     </div>
     <div class="tarjeta"><h3>2 · Descargar y presentar</h3>
       <div class="fila"><button class="btn ok" id="cDesc" disabled>${galeno ? "Descargar Anexo de prestaciones" : "Descargar archivo convertido"}</button>
-      <a class="enlace" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(link)}</a></div>
-      <p class="suave">Al descargar se abre el portal de ${NOMBRES[S.os]} en otra pestaña.</p>
+      ${link ? `<a class="enlace" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(link)}</a>` : ""}</div>
+      ${link ? `<p class="suave">Al descargar se abre el portal de ${NOMBRES[S.os]} en otra pestaña.</p>` : ""}
     </div>`;
   let listo = null;
   $("#cIniciar").onclick = async () => {
@@ -1116,9 +1117,10 @@ VISTAS.present = async () => {
       listo = { blob: await r.blob(), nombre };
       const sinN = +r.headers.get("X-Sin-MP-N") || 0, sin = decodeURIComponent(r.headers.get("X-Sin-MP") || "");
       $("#cRes").innerHTML = `<div class="aviso ok sinMargen" role="status">${ICO.ok}${miles(r.headers.get("X-Filas"))} filas convertidas → <b>${esc(nombre)}</b></div>
-        ${galeno ? `<div class="aviso info">Coseguros descontados: ${pesos(r.headers.get("X-Coseguro-Total"))} en ${miles(r.headers.get("X-Coseguro-Filas"))} fila(s).</div>` : ""}
-        ${galeno && +r.headers.get("X-Sin-Cruce-N") ? `<div class="aviso">${miles(r.headers.get("X-Sin-Cruce-N"))} transacción(es) del export no están en el archivo validado (ej: ${esc(decodeURIComponent(r.headers.get("X-Sin-Cruce") || ""))}): en esas filas no se descontó coseguro. Subí el archivo validado de ese período y volvé a convertir.</div>` : ""}
-        ${galeno && r.headers.get("X-Excedidos") ? `<div class="aviso mal">El coseguro supera al importe en: ${esc(decodeURIComponent(r.headers.get("X-Excedidos")))}. Esas filas quedaron en 0; revisalas.</div>` : ""}
+        ${conVal ? `<div class="aviso info">Coseguros descontados: ${pesos(r.headers.get("X-Coseguro-Total"))} en ${miles(r.headers.get("X-Coseguro-Filas"))} fila(s).</div>` : ""}
+        ${swiss ? `<div class="aviso info">Honorarios: ${pesos(r.headers.get("X-Honorarios"))} · filas con IVA 1 (× 1,105): ${miles(r.headers.get("X-Con-Iva"))} · <b>Total: ${pesos(r.headers.get("X-Total"))}</b></div>` : ""}
+        ${conVal && +r.headers.get("X-Sin-Cruce-N") ? `<div class="aviso">${miles(r.headers.get("X-Sin-Cruce-N"))} transacción(es) del export no están en el archivo validado (ej: ${esc(decodeURIComponent(r.headers.get("X-Sin-Cruce") || ""))}): en esas filas no se descontó coseguro. Subí el archivo validado de ese período y volvé a convertir.</div>` : ""}
+        ${conVal && r.headers.get("X-Excedidos") ? `<div class="aviso mal">El coseguro supera al importe en: ${esc(decodeURIComponent(r.headers.get("X-Excedidos")))}. Esas filas quedaron en 0; revisalas.</div>` : ""}
         ${+r.headers.get("X-Sin-Esp-N") ? `<div class="aviso">${r.headers.get("X-Sin-Esp-N")} cuenta(s) sin especialidad en el padrón: ${esc(decodeURIComponent(r.headers.get("X-Sin-Esp") || ""))}. La columna Especialidad queda vacía en esas filas.</div>` : ""}
         ${sinN ? `<div class="aviso">${sinN} cuenta(s) sin matrícula (MP) en el padrón: ${esc(sin)}${sinN > 60 ? "…" : ""}. Cargalas en Padrón y volvé a convertir.</div>` : ""}`;
       $("#cDesc").disabled = false;
@@ -1126,7 +1128,7 @@ VISTAS.present = async () => {
     } catch (err) { fallo(err); }
     b.disabled = false; b.textContent = "Iniciar conversor";
   };
-  $("#cDesc").onclick = () => { if (!listo) return; descargarBlob(listo.blob, listo.nombre); window.open(link, "_blank", "noopener"); };
+  $("#cDesc").onclick = () => { if (!listo) return; descargarBlob(listo.blob, listo.nombre); if (link) window.open(link, "_blank", "noopener"); };
 };
 
 /* ───────────── Administración: auditoría, copias y usuarios ───────────── */

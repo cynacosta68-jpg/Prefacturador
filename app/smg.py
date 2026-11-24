@@ -140,154 +140,268 @@ def _col(df, *nombres):
 
 
 # ───────────────────────── base de valorización ─────────────────────────
+#
+# La base de SWISS MEDICAL tiene dos partes que se consolidan en «Valores»:
+#
+#   · Valores fijos: reporte que sale del sistema (Nomenclador, Cod, Descripción, Arancel, Honorario,
+#     Gasto, Aparatología, Ayudantía, Total prestación). Se sube cada mes indicando su vigencia.
+#   · Valores por unidades: la tabla «Valor en unidades» (código → unidades del cirujano por tipo de
+#     nomenclador) y la tabla «unidades» (valor de cada unidad, que se carga cada mes con su vigencia).
+#     El valor de la prestación es unidades × valor de la unidad.
 
-def importar_base(os_key, contenido, nombre):
-    """Carga la «Base de datos de valorización» en las tablas de valores y unidades.
-    Cada mes de la base queda como un período; se reemplazan los períodos que trae el archivo."""
+HOJA_FIJOS, HOJA_UNID = "Valor Fijos", "Valor en unidades"
+HOJAS_BASE = (HOJA_FIJOS, HOJA_UNID)
+
+# Especialidad del profesional → tipo de nomenclador de «Valor en unidades» que le corresponde
+NOMENCLADOR_POR_ESPECIALIDAD = {
+    "UROLOGIA": "NOMENCLADOR UROLOGICO", "GASTROENTEROLOGIA": "NOMENCLADOR GASTROENTEROLOGICO",
+    "OTORRINOLARINGOLOGIA": "NOMENCLADOR ORL", "TOCOGINECOLOGIA": "NOMENCLADOR GINECOLOGICO",
+    "GINECOLOGIA": "NOMENCLADOR GINECOLOGICO", "OBSTETRICIA": "NOMENCLADOR GINECOLOGICO",
+    "HEMATOLOGIA": "NOMENCLADOR HEMATOLOGICO", "ORTOPEDIA Y TRAUMATOLOGIA": "NOMENCLADOR TRAUMATOLOGICO",
+    "ONCOLOGIA INFANTIL": "NOMENCLADOR ONCOHEMATOLOGIA-PEDIATRICA", "CIRUGIA GENERAL": "NOMENCLADOR CIRUGIA GRAL",
+    "CIRUGIA INFANTIL": "NOMENCLADOR CIRUGIA GRAL", "CIRUGIA DE CABEZA Y CUELLO": "NOMENCLADOR CIRUGIA GRAL",
+}
+
+
+def _texto(v):
+    return "" if v is None or (isinstance(v, float) and pd.isna(v)) else " ".join(str(v).split())
+
+
+def _hojas_base(libro):
+    """Ubica en el libro las tres tablas de la base, por nombre de solapa o por sus columnas."""
+    fij = nom = uni = None
+    for nombre, df in libro.items():
+        n, cols = sin_tilde(nombre), {sin_tilde(c) for c in df.columns}
+        if n == "VALOR FIJOS" or ({"COD", "TOTAL PRESTACION"} <= cols) or ({"CODIGO", "TOTAL PRESTACION"} <= cols):
+            fij = df if fij is None else fij
+        elif n in ("VALOR EN UNIDADES", "NOMENCLADOR") or "CIRUJANO" in cols:
+            nom = df if nom is None else nom
+        elif n == "UNIDADES" or ({"TIPO DE UNIDAD", "VALOR"} <= cols) or ({"TIPO DE NOMENCLADOR", "VALOR"} <= cols):
+            uni = df if uni is None else uni
+    return fij, nom, uni
+
+
+def es_base(contenido):
+    """True si el Excel trae alguna de las tablas de la base de valorización (y no es la grilla por especialidad)."""
+    try:
+        engine = "openpyxl" if contenido[:2] == b"PK" else "xlrd"
+        libro = pd.read_excel(io.BytesIO(contenido), sheet_name=None, engine=engine, nrows=3)
+    except Exception:
+        return False
+    return any(x is not None for x in _hojas_base(libro))
+
+
+def _variante(nombre_unidad):
+    """Categoría a la que corresponde una unidad «variable» (Traumatologia Categoria B, Ginecologia Re Certificados…)."""
+    n = sin_tilde(nombre_unidad)
+    if "RE CERT" in n or "RECERT" in n:
+        return "R"
+    m = re.search(r"\b(?:CATEGORIA|CONSULTA)\s+([ABC])\b", n)
+    return m.group(1) if m else ""
+
+
+def importar_base(os_key, contenido, nombre, vigencia=""):
+    """Carga la base de valorización. El archivo puede traer las tres tablas juntas o una sola:
+    el reporte de valores fijos, la tabla «unidades» o la tabla «Valor en unidades».
+    `vigencia` (MMAAAA) se usa para las tablas que no traen su propia columna de período."""
     engine = "openpyxl" if contenido[:2] == b"PK" else "xlrd"
     libro = pd.read_excel(io.BytesIO(contenido), sheet_name=None, engine=engine)
-    hojas = {sin_tilde(k): v for k, v in libro.items()}
-    faltan = [n for n in ("NOMENCLADOR", "UNIDADES", "VALOR FIJOS") if n not in hojas]
-    if faltan:
-        raise ValueError("La base de valorización de SWISS MEDICAL debe tener las solapas Nomenclador, unidades y "
-                         "Valor Fijos. Faltan: " + ", ".join(faltan) + ".")
-    nom, uni, fij = hojas["NOMENCLADOR"], hojas["UNIDADES"], hojas["VALOR FIJOS"]
-    c_cod, c_tipo, c_cir = _col(nom, "Código", "Codigo"), _col(nom, "Tipo de nomenclador"), _col(nom, "Cirujano")
-    u_tipo, u_mes, u_val = _col(uni, "Tipo de Nomenclador"), _col(uni, "Mes"), _col(uni, "Valor")
-    f_cod, f_ar, f_per = _col(fij, "Cod", "Código", "Codigo"), _col(fij, "Arancel"), _col(fij, "Periodo", "Período")
-    f_nom, f_desc, f_tot = _col(fij, "Nomenclador"), _col(fij, "Descripción", "Descripcion"), _col(fij, "Total prestación", "Total prestacion")
-    for etiqueta, c in (("Nomenclador: Código", c_cod), ("Nomenclador: Tipo de nomenclador", c_tipo),
-                        ("Nomenclador: Cirujano", c_cir), ("unidades: Tipo de Nomenclador", u_tipo),
-                        ("unidades: Mes", u_mes), ("unidades: Valor", u_val), ("Valor Fijos: Cod", f_cod),
-                        ("Valor Fijos: Periodo", f_per), ("Valor Fijos: Total prestación", f_tot)):
-        if c is None:
-            raise ValueError(f"En la base de valorización falta la columna «{etiqueta}».")
-    c_desc = _col(nom, "Descripción", "Descripcion", "Detalle", "Prestación")
+    fij, nom, uni = _hojas_base(libro)
+    if fij is None and nom is None and uni is None:
+        raise ValueError("El archivo no tiene ninguna de las tablas de la base de valorización "
+                         "(Valor Fijos, Valor en unidades, unidades).")
+    vigencia = (vigencia or "").strip()
+    if vigencia and not re.fullmatch(r"(0[1-9]|1[0-2])\d{4}", vigencia):
+        raise ValueError("La vigencia debe tener formato MMAAAA (ej: 112026).")
 
-    unidades = []        # (periodo, tipo, valor)
-    for _, r in uni.iterrows():
-        p, v, t = _periodo(r[u_mes]), _num(r[u_val]), str(r[u_tipo]).strip() if not pd.isna(r[u_tipo]) else ""
-        if p and v and t:
-            unidades.append((p, t, v))
+    def falta_vigencia(tabla):
+        raise ValueError(f"La tabla «{tabla}» no trae la columna de período: indicá la vigencia (MMAAAA) al subirla.")
+
+    # ── valores fijos
     fijos = []
-    for _, r in fij.iterrows():
-        p, v, cod = _periodo(r[f_per]), _num(r[f_tot]), limpiar(r[f_cod])
-        if p and v is not None and cod:
-            fijos.append(dict(periodo=p, codigo=cod, categoria=limpiar(r[f_ar]) if f_ar else "",
-                              nomenclador="" if not f_nom or pd.isna(r[f_nom]) else str(r[f_nom]).strip(),
-                              descripcion="" if not f_desc or pd.isna(r[f_desc]) else str(r[f_desc]).strip(), valor=v))
-    nomen = []
-    for _, r in nom.iterrows():
-        cod, cir = limpiar(r[c_cod]), _num(r[c_cir])
-        if cod and cir is not None:
-            nomen.append(dict(codigo=cod, tipo=str(r[c_tipo]).strip() if not pd.isna(r[c_tipo]) else "", cirujano=cir,
-                              descripcion="" if not c_desc or pd.isna(r[c_desc]) else str(r[c_desc]).strip()))
-    periodos = sorted({p for p, _, _ in unidades} | {f["periodo"] for f in fijos}, key=lambda p: (p[2:], p[:2]))
-    if not periodos:
-        raise ValueError("La base de valorización no tiene períodos con valores (columnas Mes / Periodo).")
-
-    with db.tx() as c:
-        for p in periodos:
-            c.execute("DELETE FROM valores WHERE os=? AND periodo=?", (os_key, p))
-            c.execute("DELETE FROM unidades WHERE os=? AND periodo=?", (os_key, p))
-        ids = {}
-        for fila, (p, t, v) in enumerate(unidades, start=2):
-            if (p, t) in ids:
+    if fij is not None:
+        f_cod, f_ar, f_per = _col(fij, "Cod", "Código", "Codigo"), _col(fij, "Arancel"), _col(fij, "Periodo", "Período", "Vigencia")
+        f_nom, f_desc = _col(fij, "Nomenclador"), _col(fij, "Descripción", "Descripcion")
+        f_tot, f_hon = _col(fij, "Total prestación", "Total prestacion"), _col(fij, "Honorario")
+        if f_cod is None or f_tot is None:
+            raise ValueError("En los valores fijos faltan las columnas «Cod» y «Total prestación».")
+        if f_per is None and not vigencia:
+            falta_vigencia("Valor Fijos")
+        for r in fij.itertuples(index=False):
+            r = dict(zip(fij.columns, r))
+            p, v, cod = (_periodo(r[f_per]) if f_per else vigencia), _num(r[f_tot]), limpiar(r[f_cod])
+            if p and v is not None and cod:
+                fijos.append((p, cod, limpiar(r[f_ar]) if f_ar else "", _texto(r[f_nom]) if f_nom else "",
+                              _texto(r[f_desc]) if f_desc else "", round(v, 2), _num(r[f_hon]) if f_hon else None))
+    # ── valores de las unidades
+    unidades = []        # (periodo, nombre, nomenclador, categoría, valor)
+    if uni is not None:
+        u_nombre, u_tipo = _col(uni, "Tipo de unidad"), _col(uni, "Tipo de Nomenclador")
+        u_per, u_val = _col(uni, "Vigencia", "Mes", "Periodo", "Período"), _col(uni, "Valor")
+        if u_tipo is None or u_val is None:
+            raise ValueError("En la tabla «unidades» faltan las columnas «Tipo de Nomenclador» y «Valor».")
+        if u_per is None and not vigencia:
+            falta_vigencia("unidades")
+        base = {}        # por período: nomenclador de la última unidad no variable
+        for r in uni.itertuples(index=False):
+            r = dict(zip(uni.columns, r))
+            p, v, tipo = (_periodo(r[u_per]) if u_per else vigencia), _num(r[u_val]), _texto(r[u_tipo])
+            nombre_u = _texto(r[u_nombre]) if u_nombre else tipo
+            if not (p and v and tipo):
                 continue
-            cur = c.execute("INSERT INTO unidades(os,periodo,especialidad,tipo_unidad,valor,origen,hoja,fila) "
-                            "VALUES (?,?,?,?,?,?,?,?)", (os_key, p, t, "Unidad · " + t, v, "declarada", "unidades", fila))
-            ids[(p, t)] = (cur.lastrowid, v)
-        n_nom = 0
-        for (p, t), (uid, v) in ids.items():
-            for fila, n in enumerate(nomen, start=2):
-                if n["tipo"] != t:
-                    continue
-                c.execute("INSERT INTO valores(os,periodo,especialidad,seccion,codigo,codigo_prestador,descripcion,categoria,"
-                          "unidades,tipo_valor,unidad_id,valor,valor_grilla,ayudantes,grupo,hoja,fila) "
-                          "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (os_key, p, t, "Nomenclador", n["codigo"], "", n["descripcion"], "", n["cirujano"], "unidad",
-                           uid, round(n["cirujano"] * v, 2), None, "", "", "Nomenclador", fila))
-                n_nom += 1
-        for fila, f in enumerate(fijos, start=2):
-            c.execute("INSERT INTO valores(os,periodo,especialidad,seccion,codigo,codigo_prestador,descripcion,categoria,"
-                      "unidades,tipo_valor,unidad_id,valor,valor_grilla,ayudantes,grupo,hoja,fila) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                      (os_key, f["periodo"], f["nomenclador"] or "Valores fijos", f["nomenclador"], f["codigo"], "",
-                       f["descripcion"], f["categoria"], None, "fijo", None, round(f["valor"], 2), f["valor"], "", "",
-                       "Valor Fijos", fila))
-    return {"filas": n_nom + len(fijos), "periodo": periodos[-1], "periodos": periodos, "unidades": len(ids),
-            "por_unidad": n_nom, "fijas": len(fijos),
-            "hojas": [{"hoja": "Nomenclador", "prestaciones": n_nom, "por_unidad": n_nom, "fijas": 0, "unidades": 0},
-                      {"hoja": "unidades", "prestaciones": 0, "por_unidad": 0, "fijas": 0, "unidades": len(ids)},
-                      {"hoja": "Valor Fijos", "prestaciones": len(fijos), "por_unidad": 0, "fijas": len(fijos), "unidades": 0}]}
+            if sin_tilde(tipo).startswith("VARIABLE"):      # variante por categoría de la unidad anterior
+                unidades.append((p, nombre_u, base.get(p, tipo), _variante(nombre_u) or "?", v))
+            else:
+                base[p] = tipo
+                unidades.append((p, nombre_u, tipo, "", v))
+    # ── unidades por prestación
+    nomen = None
+    if nom is not None:
+        c_cod, c_tipo, c_cir = _col(nom, "Código", "Codigo"), _col(nom, "Tipo de nomenclador"), _col(nom, "Cirujano")
+        c_desc = _col(nom, "Descripción de Práctica", "Descripción", "Descripcion", "Detalle", "Prestación")
+        if c_cod is None or c_tipo is None or c_cir is None:
+            raise ValueError("En «Valor en unidades» faltan las columnas «Código», «Tipo de nomenclador» y «Cirujano».")
+        nomen = []
+        for r in nom.itertuples(index=False):
+            r = dict(zip(nom.columns, r))
+            cod, cir = limpiar(r[c_cod]), _num(r[c_cir])
+            if cod and re.match(r"^\d", cod) and cir:
+                nomen.append((cod, _texto(r[c_tipo]), cir, _texto(r[c_desc]) if c_desc else ""))
+
+    per_fijos = {f[0] for f in fijos}
+    per_unid = {u[0] for u in unidades}
+    if nomen is not None and not per_unid:        # se subió solo «Valor en unidades»: rige para la vigencia indicada
+        if not vigencia:
+            falta_vigencia("Valor en unidades")
+        per_unid = {vigencia}
+    orden = lambda p: (p[2:], p[:2])  # noqa: E731
+    periodos = sorted(per_fijos | per_unid, key=orden)
+    if not periodos:
+        raise ValueError("El archivo no trae valores para ningún período.")
+
+    marcas = ",".join("?" * len(HOJAS_BASE))
+    n_unid_val = 0
+    with db.tx() as c:
+        for p in periodos:        # si el período tenía la grilla por especialidad, se reemplaza por la base
+            c.execute(f"DELETE FROM valores WHERE os=? AND periodo=? AND hoja NOT IN ({marcas})", (os_key, p) + HOJAS_BASE)
+            c.execute("DELETE FROM unidades WHERE os=? AND periodo=? AND hoja<>'unidades'", (os_key, p))
+        for p in per_fijos:
+            c.execute("DELETE FROM valores WHERE os=? AND periodo=? AND hoja=?", (os_key, p, HOJA_FIJOS))
+        c.executemany(
+            "INSERT INTO valores(os,periodo,especialidad,seccion,codigo,codigo_prestador,descripcion,categoria,unidades,"
+            "tipo_valor,unidad_id,valor,valor_grilla,ayudantes,grupo,hoja,fila) VALUES (?,?,?,?,?,'',?,?,NULL,'fijo',NULL,?,?,'','',?,?)",
+            [(os_key, p, nomc or "Valores fijos", nomc, cod, desc, cat, v, hon, HOJA_FIJOS, i)
+             for i, (p, cod, cat, nomc, desc, v, hon) in enumerate(fijos, start=2)])
+        for p in per_unid:
+            # tabla de unidades por prestación: la del archivo o, si no vino, la última cargada
+            tabla = nomen
+            if tabla is None:
+                ult = c.execute("SELECT periodo FROM valores WHERE os=? AND hoja=? ORDER BY substr(periodo,3)||substr(periodo,1,2) DESC LIMIT 1",
+                                (os_key, HOJA_UNID)).fetchone()
+                tabla = [] if not ult else [(r["codigo"], r["especialidad"], r["unidades"], r["descripcion"]) for r in c.execute(
+                    "SELECT DISTINCT codigo, especialidad, unidades, descripcion FROM valores WHERE os=? AND periodo=? AND hoja=?",
+                    (os_key, ult["periodo"], HOJA_UNID)).fetchall()]
+            if any(u[0] == p for u in unidades):
+                c.execute("DELETE FROM unidades WHERE os=? AND periodo=?", (os_key, p))
+                for fila, (pp, nombre_u, tipo, cat, v) in enumerate(unidades, start=2):
+                    if pp == p:
+                        c.execute("INSERT INTO unidades(os,periodo,especialidad,tipo_unidad,valor,origen,hoja,fila,categoria) "
+                                  "VALUES (?,?,?,?,?,?,?,?,?)", (os_key, p, tipo, nombre_u, v, "declarada", "unidades", fila, cat))
+            us = {}
+            for u in c.execute("SELECT * FROM unidades WHERE os=? AND periodo=? ORDER BY id", (os_key, p)).fetchall():
+                us.setdefault(u["especialidad"], []).append(dict(u))
+            c.execute("DELETE FROM valores WHERE os=? AND periodo=? AND hoja=?", (os_key, p, HOJA_UNID))
+            filas = []
+            for i, (cod, tipo, cir, desc) in enumerate(tabla, start=2):
+                for u in us.get(tipo, []):
+                    filas.append((os_key, p, tipo, cod, desc, u["categoria"] or "", cir, u["id"], round(cir * u["valor"], 2), HOJA_UNID, i))
+            c.executemany(
+                "INSERT INTO valores(os,periodo,especialidad,seccion,codigo,codigo_prestador,descripcion,categoria,unidades,"
+                "tipo_valor,unidad_id,valor,valor_grilla,ayudantes,grupo,hoja,fila) VALUES (?,?,?,'',?,'',?,?,?,'unidad',?,?,NULL,'','',?,?)", filas)
+            n_unid_val += len(filas)
+    return {"filas": len(fijos) + n_unid_val, "periodo": periodos[-1], "periodos": periodos,
+            "unidades": len(unidades), "por_unidad": n_unid_val, "fijas": len(fijos),
+            "hojas": [h for h in (
+                {"hoja": "Valores fijos", "prestaciones": len(fijos), "por_unidad": 0, "fijas": len(fijos), "unidades": 0} if fij is not None else None,
+                {"hoja": "Valores por unidades", "prestaciones": n_unid_val, "por_unidad": n_unid_val, "fijas": 0, "unidades": 0} if n_unid_val else None,
+                {"hoja": "Unidades", "prestaciones": 0, "por_unidad": 0, "fijas": 0, "unidades": len(unidades)} if uni is not None else None) if h]}
+
+
+def recalcular_unidades(os_key, periodo):
+    """«Actualizar valores por unidades»: valor = unidades × valor de la unidad, para todo el período."""
+    with db.tx() as c:
+        n = c.execute("UPDATE valores SET valor=ROUND(unidades*(SELECT u.valor FROM unidades u WHERE u.id=valores.unidad_id),2) "
+                      "WHERE os=? AND periodo=? AND tipo_valor='unidad' AND unidad_id IS NOT NULL", (os_key, periodo)).rowcount
+    return {"recalculadas": n}
 
 
 # ───────────────────────── valorización ─────────────────────────
 
 class Valorizador:
-    """Aplica las reglas del repositorio para un período (el mes de la transacción)."""
+    """Valoriza con la base de un período (el mes de la prestación; si no está, el anterior más cercano).
+
+    Reglas, contrastadas con la facturación emitida de octubre 2026:
+      1. Valores por unidades: si el código está en «Valor en unidades» bajo el nomenclador de la
+         especialidad del profesional → unidades × valor de la unidad (con la variante de su categoría:
+         Traumatología A / B / C, Ginecología recertificados para R).
+      2. Valores fijos del código, en este orden: categoría del profesional con descripción «SMG» →
+         valor fijo sin categoría (VF) → categoría del profesional → C si es R y no hay fila R.
+         · «Consulta médica en consultorio» (42010100): «consulta clínica médica» para clínica médica,
+           medicina interna y geriatría; «consulta médica» para el resto.
+         · Radiología (capítulo 34): se factura el honorario, sin el gasto."""
 
     def __init__(self, os_key, periodo):
-        self.periodo = periodo
-        filas = db.q("SELECT * FROM valores WHERE os=? AND periodo=? AND valor IS NOT NULL ORDER BY id", (os_key, periodo))
-        self.fijos = [f for f in filas if f["hoja"] == "Valor Fijos"]
-        self.nomen = {}
-        for f in filas:
-            if f["hoja"] == "Nomenclador":
-                self.nomen.setdefault(clave_cod(f["codigo"]), f["valor"])
-        for f in self.fijos:
-            f["_k"] = clave_cod(f["codigo"])
-            f["_cat"] = limpiar(f["categoria"])
-            f["_nom"] = sin_tilde(f["seccion"])
-        self.hay = bool(filas)
+        clave = lambda p: (p[2:], p[:2])  # noqa: E731
+        marcas = ",".join("?" * len(HOJAS_BASE))
+        pers = [r["periodo"] for r in db.q(f"SELECT DISTINCT periodo FROM valores WHERE os=? AND hoja IN ({marcas})",
+                                           (os_key,) + HOJAS_BASE)]
+        previos = sorted((p for p in pers if clave(p) <= clave(periodo)), key=clave) if periodo else []
+        self.periodo = previos[-1] if previos else None
+        self.fijos, self.unid = {}, {}
+        if self.periodo:
+            for f in db.q(f"SELECT * FROM valores WHERE os=? AND periodo=? AND hoja IN ({marcas}) AND valor>0 ORDER BY id",
+                          (os_key, self.periodo) + HOJAS_BASE):
+                f["_smg"] = str(f["descripcion"] or "").startswith("SMG")
+                (self.fijos if f["hoja"] == HOJA_FIJOS else self.unid).setdefault(clave_cod(f["codigo"]), []).append(f)
+        self.hay = bool(self.fijos or self.unid)
 
-    def _fijo(self, cond):
-        return next((f["valor"] for f in self.fijos if cond(f)), None)
-
-    def valor(self, cod, categoria, especialidad):
-        """Devuelve (valor, regla) o (None, '')."""
+    def valor(self, cod, categoria, especialidad, desc=""):
+        """Devuelve (valor, regla) o (None, motivo)."""
         k, cat, esp = clave_cod(cod), limpiar(categoria), sin_tilde(especialidad)
-        smg = lambda f: str(f["descripcion"] or "").startswith("SMG")  # noqa: E731
-
-        # R_ESP · reglas por especialidad / código específico
-        v = None
-        if k in CODIGOS_SMG_SIN_ARANCEL:
-            v = self._fijo(lambda f: f["_k"] == k and smg(f))
-        elif k in CODIGOS_SMG_CON_ARANCEL:
-            v = self._fijo(lambda f: f["_k"] == k and f["_cat"] == cat and smg(f))
-        elif k == "42010100" and esp in ESPECIALIDADES_CLINICA_42:
-            v = self._fijo(lambda f: f["_k"] == k and f["descripcion"] == DESC_CLINICA and f["_cat"] == cat)
-        elif k == "42010100" and esp == "MEDICO":
-            v = self._fijo(lambda f: f["_k"] == k and f["descripcion"] == DESC_MEDICO and f["_cat"] == cat)
-        elif k == "42010100" and esp == "MEDICINA GENERAL Y/O FAMILIAR":
-            efectivo = "C" if cat == "R" else cat
-            v = self._fijo(lambda f: f["_k"] == k and f["descripcion"] == DESC_MEDGEN and f["_cat"] == efectivo)
-        elif esp == "DIAGNOSTICO POR IMAGENES":
-            v = self._fijo(lambda f: f["_k"] == k and not f["seccion"])
-        if v is not None:
-            return v, "regla especial"
-
-        # R0 · Nomenclador Nacional
-        if esp in ESPECIALIDADES_R0 and not k.startswith("4"):
-            v = self._fijo(lambda f: f["_k"] == k and "NOMENCLADOR NACIONAL" in f["_nom"])
-            if v is not None:
-                return v, "nomenclador nacional"
-        # R1 · nomenclador × unidad
-        if k in self.nomen:
-            return self.nomen[k], "nomenclador × unidad"
-        # R2 · valores fijos de Swiss Medical
-        sm = lambda f: not f["seccion"] or "SWISS MEDICAL" in f["_nom"]  # noqa: E731
-        v = self._fijo(lambda f: f["_k"] == k and f["_cat"] == cat and sm(f))
-        if v is not None:
-            return v, "valor fijo SMG (código + categoría)"
-        v = self._fijo(lambda f: f["_k"] == k and sm(f))
-        if v is not None:
-            return v, "valor fijo SMG (código)"
-        # R3 · valores fijos sin filtro de nomenclador
-        v = self._fijo(lambda f: f["_k"] == k and f["_cat"] == cat)
-        if v is not None:
-            return v, "valor fijo (código + categoría)"
-        return None, ""
+        # 1 · por unidades, con el nomenclador de la especialidad
+        nomen = NOMENCLADOR_POR_ESPECIALIDAD.get(esp)
+        filas = [f for f in self.unid.get(k, []) if f["especialidad"] == nomen] if nomen else []
+        if filas:
+            cats = {f["categoria"] for f in filas}
+            efectiva = cat if cat in cats else ("C" if cat == "R" and "C" in cats else "")
+            f = next((x for x in filas if x["categoria"] == efectiva), None)
+            if f:
+                return f["valor"], f"por unidades · {f['especialidad'].replace('NOMENCLADOR ', '').capitalize()}" + (f" · categoría {efectiva}" if efectiva else "")
+        # 2 · valores fijos
+        g = self.fijos.get(k)
+        if not g:
+            return None, ("la prestación no está en la base de valores" if self.hay else "")
+        if k == CONSULTA_GENERICA:
+            clinica = any(x in esp.lower() for x in CLINICOS_42)
+            q = [f for f in g if ("clinica" in sin_tilde(f["descripcion"]).lower()) == clinica and f["_smg"]]
+            f = next((x for x in q if x["categoria"] == cat), None) or (next((x for x in q if x["categoria"] == "C"), None) if cat == "R" else None)
+            if f:
+                return f["valor"], "valor fijo · " + ("consulta clínica médica" if clinica else "consulta médica")
+        if len(k) == 6 and k.startswith("34"):
+            f = next((x for x in g if x["categoria"] == cat and (x["valor_grilla"] or 0) > 0), None)
+            if f:
+                return f["valor_grilla"], "valor fijo · honorario (radiología)"
+        for cond, nombre in ((lambda x: x["categoria"] == cat and x["_smg"], "categoría"),
+                             (lambda x: x["categoria"] == "VF" and x["_smg"], "sin categoría"),
+                             (lambda x: x["categoria"] == "VF", "sin categoría"),
+                             (lambda x: x["categoria"] == cat, "categoría"),
+                             (lambda x: cat == "R" and x["categoria"] == "C", "categoría C (no hay valor para R)")):
+            f = next((x for x in g if cond(x)), None)
+            if f:
+                return f["valor"], "valor fijo · " + nombre
+        if cat not in ("A", "B", "C", "R"):
+            return None, "falta la categoría del profesional"
+        return None, "la prestación no tiene valor para la categoría del profesional"
 
 
 class ValorizadorGrilla:
@@ -392,8 +506,8 @@ class ValorizadorGrilla:
 
 
 class Valorizadores:
-    """Un valorizador por período, creado a demanda. Si el período tiene la base estructurada del
-    repositorio (Nomenclador / unidades / Valor Fijos) se usan sus reglas; si no, la grilla de valores."""
+    """Un valorizador por período, creado a demanda. Si hay base de valorización cargada (valores fijos y
+    valores por unidades) se usa esa; si no, la grilla de valores por especialidad."""
 
     def __init__(self, os_key):
         self.os, self.cache = os_key, {}
@@ -402,25 +516,10 @@ class Valorizadores:
         p = _periodo(fecha_ddmmaaaa) or periodo_por_defecto
         if p not in self.cache:
             vz = Valorizador(self.os, p)
-            if not vz.fijos and not vz.nomen:
-                vz = ValorizadorGrilla(self.os, p)
-            self.cache[p] = vz
+            self.cache[p] = vz if vz.hay else ValorizadorGrilla(self.os, p)
         vz = self.cache[p]
-        if isinstance(vz, ValorizadorGrilla):
-            v, regla = vz.valor(cod, categoria, especialidad, desc)
-        else:
-            v, regla = vz.valor(cod, categoria, especialidad)
+        v, regla = vz.valor(cod, categoria, especialidad, desc)
         return v, regla, (vz.periodo or p), vz.hay
-
-
-def es_base(contenido):
-    """True si el Excel es la base estructurada del repositorio (y no la grilla por especialidad)."""
-    try:
-        engine = "openpyxl" if contenido[:2] == b"PK" else "xlrd"
-        nombres = {sin_tilde(n) for n in pd.ExcelFile(io.BytesIO(contenido), engine=engine).sheet_names}
-    except Exception:
-        return False
-    return {"NOMENCLADOR", "UNIDADES", "VALOR FIJOS"} <= nombres
 
 
 # ───────────────────────── reporte de liquidación ─────────────────────────

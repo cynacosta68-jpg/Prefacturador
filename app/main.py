@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import arca, archivo, db, logic, seguridad
+from . import arca, archivo, db, logic, seguridad, smg
 from .seguridad import auditar
 from .evweb_bot import ejecutar_extractor, generar_rangos_9_dias
 
@@ -519,12 +519,22 @@ def valores(os: str, periodo: str, especialidad: str = "", q: str = "", tipo: st
 
 
 @app.post("/api/valores/importar")
-async def valores_importar(os: str = Form(...), periodo: str = Form(...), archivo: UploadFile = File(...), u=Auth):
+async def valores_importar(os: str = Form(...), periodo: str = Form(""), archivo: UploadFile = File(...), u=Auth):
     datos, nombre = await _leer(archivo)
     r = logic.importar_grilla(_os(os), periodo, datos, nombre)
     logic.completar_valores_lineas()
     A(u, "valores.importar", _os(os), "grilla", r["periodo"], archivo=nombre, prestaciones=r["filas"],
       por_unidad=r["por_unidad"], fijas=r["fijas"], unidades=r["unidades"], solapas=r["hojas"])
+    return r
+
+
+@app.post("/api/valores/recalcular")
+async def valores_recalcular(request: Request, u=Auth):
+    """«Actualizar valores por unidades»: recalcula unidades × valor de la unidad en todo el período."""
+    d = await request.json()
+    os_key, periodo = _os(d.get("os")), logic.validar_periodo(d.get("periodo"))
+    r = smg.recalcular_unidades(os_key, periodo)
+    A(u, "valores.recalcular_unidades", os_key, "grilla", periodo, **r)
     return r
 
 
@@ -1164,16 +1174,22 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
     elif os_key == "SANCOR":
         salida, info = logic.convertir_sancor(datos, nombre, factura)
         archivo_out = f"PrestacionesExport_SANCOR_{periodo}.xlsx"
+    elif os_key == "SWISS":
+        val = await _leer(validado) if validado is not None and validado.filename else None
+        salida, info = logic.convertir_swiss(datos, nombre, factura, val)
+        archivo_out = f"PrestacionesExport_SWISS_{periodo}.xlsx"
     else:
         raise HTTPException(400, "AVALIAN no requiere conversión.")
     A(u, "presentacion.convertir", os_key, "presentacion", periodo, archivo=nombre, salida=archivo_out,
       factura=factura, filas=info["filas"], cuentas_sin_mp=info["sin_mp"],
-      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido") if k in info})
+      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido", "honorarios", "total", "con_iva") if k in info})
     return _descarga(salida, archivo_out, {"X-Filas": str(info["filas"]),
                                            "X-Sin-MP": quote(", ".join(info["sin_mp"][:60])),
                                            "X-Sin-MP-N": str(len(info["sin_mp"])),
                                            "X-Sin-Esp": quote(", ".join(info.get("sin_especialidad", [])[:60])),
                                            "X-Sin-Esp-N": str(len(info.get("sin_especialidad", []))),
+                                           "X-Honorarios": str(info.get("honorarios", "")), "X-Total": str(info.get("total", "")),
+                                           "X-Con-Iva": str(info.get("con_iva", "")),
                                            "X-Coseguro-Total": str(info.get("coseguro_total", "")),
                                            "X-Coseguro-Filas": str(info.get("coseguro_filas", "")),
                                            "X-Sin-Cruce-N": str(info.get("sin_cruce", "")),

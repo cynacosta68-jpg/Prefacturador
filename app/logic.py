@@ -298,8 +298,8 @@ class Padron:
 # La extracción y normalización vive en grillas.py
 
 def importar_grilla(os_key, periodo, contenido, nombre):
-    if os_key == "SWISS" and smg.es_base(contenido):     # base con solapas Nomenclador, unidades y Valor Fijos
-        return smg.importar_base(os_key, contenido, nombre)
+    if os_key == "SWISS" and smg.es_base(contenido):     # base de valorización: valores fijos y/o valores por unidades
+        return smg.importar_base(os_key, contenido, nombre, periodo)
     return grillas.importar(os_key, validar_periodo(periodo), contenido, nombre)
 
 
@@ -1061,9 +1061,12 @@ def _fila_template(l, fpres):
 def generar_template(os_key, ids):
     if not ids:
         raise ValueError("No hay filas seleccionadas.")
-    marcas = ",".join("?" * len(ids))
-    lineas = db.q(f"SELECT * FROM lineas WHERE os=? AND estado='facturacion' AND id IN ({marcas}) ORDER BY id",
-                  [os_key] + list(ids))
+    # Un solo template con todas las filas elegidas, sin tope de cantidad (se leen de a tramos)
+    ids, lineas = list(ids), []
+    for bloque in (ids[i:i + 900] for i in range(0, len(ids), 900)):
+        lineas += db.q(f"SELECT * FROM lineas WHERE os=? AND estado='facturacion' AND id IN ({','.join('?' * len(bloque))})",
+                       [os_key] + bloque)
+    lineas.sort(key=lambda l: l["id"])
     if not lineas:
         raise ValueError("Las filas seleccionadas no están en Facturación.")
     periodos = {l["periodo"] for l in lineas}
@@ -1103,8 +1106,7 @@ def generar_template(os_key, ids):
             (os_key, periodo, nn, nombre, datetime.now().strftime("%d/%m/%Y %H:%M"), len(lineas),
              round(sum(l["total"] or 0 for l in lineas), 2), out.getvalue()))
         tid = cur.lastrowid
-        c.execute(f"UPDATE lineas SET estado='template', template_id=? WHERE id IN ({','.join('?' * len(lineas))})",
-                  [tid] + [l["id"] for l in lineas])
+        c.executemany("UPDATE lineas SET estado='template', template_id=? WHERE id=?", [(tid, l["id"]) for l in lineas])
     return {"id": tid, "nombre": nombre, "filas": len(lineas)}
 
 
@@ -1151,6 +1153,60 @@ def convertir_sancor(contenido, nombre, factura=""):
     sin = sorted({txt(v) for v in df.loc[df["MP"] == "", c_mat]})
     df = _num_export(df)
     return df_a_xlsx(df.fillna(""), "Prestaciones exportadas"), {"filas": len(df), "sin_mp": sin}
+
+
+IVA_SWISS = 1.105       # 10,5 % sobre el honorario cuando la fila lleva IVA = 1
+
+
+def convertir_swiss(contenido, nombre, factura="", validado=None):
+    """PrestacionesExport de SWISS MEDICAL para presentar:
+      · agrega la columna MP (matrícula del padrón) a continuación de Matricula, igual que SANCOR;
+      · agrega la columna «Total» a continuación de IVA: (Honorario − coseguro de esa transacción),
+        multiplicado por 1,105 si IVA = 1.
+    El coseguro sale del Reporte de Liquidación (columna Copago), cruzado por número de transacción."""
+    df = _leer_export(contenido, nombre, factura)
+    padron = Padron("SWISS")
+    if validado:      # reporte de liquidación subido en el momento: actualiza los coseguros guardados
+        filas_val, _ = smg.parse_reporte(leer_tabla(validado[0], validado[1], claves=PARSERS["SWISS"][1]))
+        guardar_coseguros("SWISS", filas_val)
+    cos = {}
+    for f in db.q("SELECT nro, copago FROM coseguros WHERE os='SWISS'"):
+        cos[f["nro"]] = cos.get(f["nro"], 0) + (f["copago"] or 0)
+    c_mat, c_cuit = col(df, "Matricula", parcial=False), col(df, "cuit", parcial=False)
+    c_aut, c_hon, c_iva = col(df, "numaut", parcial=False), col(df, "Honorario", parcial=False), col(df, "IVA", parcial=False)
+    if not c_aut or not c_hon or not c_iva:
+        raise ValueError("El PrestacionesExport debe tener las columnas numaut, Honorario e IVA.")
+
+    def mp(r):
+        p = padron.por_cuenta.get(txt(r[c_mat]).upper())
+        if not p and c_cuit:
+            p = padron.por_cuit.get(re.sub(r"\D", "", txt(r[c_cuit])))
+        return padron.mp(p)
+
+    mps = df.apply(mp, axis=1)
+    usados, totales, cos_total, cos_filas, sin_cruce, excedidos, con_iva = set(), [], 0.0, 0, [], [], 0
+    for nro, hon, iva in zip(df[c_aut].map(limpiar_id), df[c_hon].map(num), df[c_iva].map(num)):
+        if nro not in cos:
+            sin_cruce.append(nro)
+        copago = 0.0 if nro in usados else cos.get(nro, 0.0)      # el coseguro de una transacción se descuenta una sola vez
+        usados.add(nro)
+        neto = hon - copago
+        if neto < 0:
+            excedidos.append(nro)
+            neto = 0.0
+        if copago:
+            cos_total, cos_filas = cos_total + min(copago, hon), cos_filas + 1
+        lleva = int(iva or 0) == 1
+        con_iva += lleva
+        totales.append(round(neto * (IVA_SWISS if lleva else 1), 2))
+    df = _num_export(df)
+    df.insert(list(df.columns).index(c_iva) + 1, "Total", totales)
+    df.insert(list(df.columns).index(c_mat) + 1, "MP", mps)
+    sin = sorted({txt(v) for v in df.loc[df["MP"] == "", c_mat]})
+    return df_a_xlsx(df.fillna(""), "Prestaciones exportadas"), {
+        "filas": len(df), "sin_mp": sin, "coseguro_total": round(cos_total, 2), "coseguro_filas": cos_filas,
+        "sin_cruce": len(sin_cruce) if cos else len(df), "sin_cruce_ej": sin_cruce[:8], "coseguro_excedido": excedidos[:20],
+        "honorarios": round(float(df[c_hon].fillna(0).sum()), 2), "total": round(sum(totales), 2), "con_iva": con_iva}
 
 
 def convertir_galeno(contenido, nombre, factura="", validado=None):
