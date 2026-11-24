@@ -1,4 +1,5 @@
 """API + interfaz. Un solo servicio (una sola réplica: el bot corre en un hilo)."""
+import hashlib
 import io
 import os
 import re
@@ -66,6 +67,8 @@ async def _cabeceras(request: Request, call_next):
         resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.url.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
+    elif request.url.path in ("/static/app.js", "/static/app.css"):
+        resp.headers["Cache-Control"] = "no-cache"      # el navegador siempre verifica si cambió
     return resp
 
 
@@ -1182,14 +1185,14 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
         raise HTTPException(400, "AVALIAN no requiere conversión.")
     A(u, "presentacion.convertir", os_key, "presentacion", periodo, archivo=nombre, salida=archivo_out,
       factura=factura, filas=info["filas"], cuentas_sin_mp=info["sin_mp"],
-      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido", "honorarios", "total", "con_iva") if k in info})
+      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido", "honorarios", "total", "con_iva", "iva_total") if k in info})
     return _descarga(salida, archivo_out, {"X-Filas": str(info["filas"]),
                                            "X-Sin-MP": quote(", ".join(info["sin_mp"][:60])),
                                            "X-Sin-MP-N": str(len(info["sin_mp"])),
                                            "X-Sin-Esp": quote(", ".join(info.get("sin_especialidad", [])[:60])),
                                            "X-Sin-Esp-N": str(len(info.get("sin_especialidad", []))),
                                            "X-Honorarios": str(info.get("honorarios", "")), "X-Total": str(info.get("total", "")),
-                                           "X-Con-Iva": str(info.get("con_iva", "")),
+                                           "X-Con-Iva": str(info.get("con_iva", "")), "X-Iva-Total": str(info.get("iva_total", "")),
                                            "X-Coseguro-Total": str(info.get("coseguro_total", "")),
                                            "X-Coseguro-Filas": str(info.get("coseguro_filas", "")),
                                            "X-Sin-Cruce-N": str(info.get("sin_cruce", "")),
@@ -1199,9 +1202,22 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
 
 # ───────────────────────── interfaz ─────────────────────────
 
+def _index_con_version():
+    """La página pide app.js y app.css con la huella de su contenido: después de cada actualización
+    el navegador baja la versión nueva en lugar de seguir usando la que tenía guardada."""
+    with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    for nombre in ("app.js", "app.css"):
+        with open(os.path.join(STATIC, nombre), "rb") as f:
+            huella = hashlib.sha256(f.read()).hexdigest()[:12]
+        html = html.replace(f"/static/{nombre}", f"/static/{nombre}?v={huella}")
+    return html.encode("utf-8")
+
+
+_INDEX = _index_con_version()
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC, "index.html"), headers={"Cache-Control": "no-cache"})
+    return Response(_INDEX, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})

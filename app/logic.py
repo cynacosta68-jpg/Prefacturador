@@ -1161,8 +1161,8 @@ IVA_SWISS = 1.105       # 10,5 % sobre el honorario cuando la fila lleva IVA = 1
 def convertir_swiss(contenido, nombre, factura="", validado=None):
     """PrestacionesExport de SWISS MEDICAL para presentar:
       · agrega la columna MP (matrícula del padrón) a continuación de Matricula, igual que SANCOR;
-      · agrega la columna «Total» a continuación de IVA: (Honorario − coseguro de esa transacción),
-        multiplicado por 1,105 si IVA = 1.
+      · agrega la columna «Total» a continuación de IVA: Honorario + IVA − coseguro de esa transacción
+        (el IVA es el 10,5 % del honorario cuando la columna IVA vale 1).
     El coseguro sale del Reporte de Liquidación (columna Copago), cruzado por número de transacción."""
     df = _leer_export(contenido, nombre, factura)
     padron = Padron("SWISS")
@@ -1184,21 +1184,23 @@ def convertir_swiss(contenido, nombre, factura="", validado=None):
         return padron.mp(p)
 
     mps = df.apply(mp, axis=1)
-    usados, totales, cos_total, cos_filas, sin_cruce, excedidos, con_iva = set(), [], 0.0, 0, [], [], 0
+    usados, totales, cos_total, cos_filas, sin_cruce, excedidos, con_iva, iva_total = set(), [], 0.0, 0, [], [], 0, 0.0
     for nro, hon, iva in zip(df[c_aut].map(limpiar_id), df[c_hon].map(num), df[c_iva].map(num)):
         if nro not in cos:
             sin_cruce.append(nro)
         copago = 0.0 if nro in usados else cos.get(nro, 0.0)      # el coseguro de una transacción se descuenta una sola vez
         usados.add(nro)
-        neto = hon - copago
-        if neto < 0:
-            excedidos.append(nro)
-            neto = 0.0
-        if copago:
-            cos_total, cos_filas = cos_total + min(copago, hon), cos_filas + 1
         lleva = int(iva or 0) == 1
         con_iva += lleva
-        totales.append(round(neto * (IVA_SWISS if lleva else 1), 2))
+        bruto = round(hon * (IVA_SWISS if lleva else 1), 2)        # honorarios + IVA
+        total = round(bruto - copago, 2)                            # − coseguro
+        if total < 0:
+            excedidos.append(nro)
+            total = 0.0
+        if copago:
+            cos_total, cos_filas = cos_total + min(copago, bruto), cos_filas + 1
+        iva_total += bruto - hon
+        totales.append(total)
     df = _num_export(df)
     df.insert(list(df.columns).index(c_iva) + 1, "Total", totales)
     df.insert(list(df.columns).index(c_mat) + 1, "MP", mps)
@@ -1206,7 +1208,7 @@ def convertir_swiss(contenido, nombre, factura="", validado=None):
     return df_a_xlsx(df.fillna(""), "Prestaciones exportadas"), {
         "filas": len(df), "sin_mp": sin, "coseguro_total": round(cos_total, 2), "coseguro_filas": cos_filas,
         "sin_cruce": len(sin_cruce) if cos else len(df), "sin_cruce_ej": sin_cruce[:8], "coseguro_excedido": excedidos[:20],
-        "honorarios": round(float(df[c_hon].fillna(0).sum()), 2), "total": round(sum(totales), 2), "con_iva": con_iva}
+        "honorarios": round(float(df[c_hon].fillna(0).sum()), 2), "total": round(sum(totales), 2), "con_iva": con_iva, "iva_total": round(iva_total, 2)}
 
 
 def convertir_galeno(contenido, nombre, factura="", validado=None):

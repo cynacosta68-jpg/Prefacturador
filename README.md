@@ -174,12 +174,14 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
   se tildan las filas —o la casilla de la cabecera para todas las de la página— y «Eliminar seleccionadas».
   Pide confirmación y deja en la auditoría lo que se borró.
 - **Presentaciones (SWISS)**: conversor del «PrestacionesExport»: agrega la columna **MP** (matrícula del padrón) al
-  lado de Matricula, igual que SANCOR, y la columna **Total** a continuación de IVA = (Honorario − coseguro de esa
-  transacción) × 1,105 si IVA es 1, o sin multiplicar si es 0. El coseguro es la columna Copago del reporte de
+  lado de Matricula, igual que SANCOR, y la columna **Total** a continuación de IVA = Honorarios + IVA − Coseguro
+  (el IVA es el 10,5 % del honorario cuando la columna IVA vale 1). El coseguro es la columna Copago del reporte de
   liquidación, cruzada por número de transacción: se toma del reporte cargado en Pre-facturación o del que se
   suba en el momento. Informa honorarios, coseguros descontados, filas con IVA y total; avisa las transacciones
   sin cruce y las que tienen un coseguro mayor al honorario (quedan en 0 para revisar).
 - **Templates**: un solo template con todas las líneas seleccionadas, sin dividir por cantidad de filas.
+- **Orden de las columnas**: en Pre-facturación, Facturación y Emitidas se puede arrastrar el encabezado de una columna
+  hasta otro lugar; el orden queda guardado en ese navegador y «Restablecer columnas» vuelve al original.
 - **Incremento %**: al modificar una línea (o varias a la vez) en Pre-facturación o Facturación se puede indicar
   un porcentaje sobre el valor unitario (negativo = descuento). Queda anotado en el origen del valor, en la
   observación de la línea y en la auditoría.

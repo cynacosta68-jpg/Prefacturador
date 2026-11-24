@@ -195,9 +195,41 @@ function ir(sec) {
 
 /* ───────────── tabla genérica ───────────── */
 
+/* Orden de columnas elegido por el usuario: se arrastra el encabezado y queda guardado en el navegador */
+function ordenGuardado(clave) {
+  try { return JSON.parse(localStorage.getItem("cols:" + clave) || "[]"); } catch (e) { return []; }
+}
+function ordenarCols(cols, clave) {
+  const orden = ordenGuardado(clave);
+  if (!orden.length) return cols;
+  const pos = k => { const i = orden.indexOf(k); return i < 0 ? 1e6 + cols.findIndex(c => c.k === k) : i; };
+  return [...cols].sort((a, b) => pos(a.k) - pos(b.k));
+}
+function enlazarColumnas(clave, cols, recargar) {
+  const ths = $$("th[data-k]");
+  let origen = null;
+  ths.forEach(th => {
+    th.ondragstart = e => { origen = th.dataset.k; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", origen); th.classList.add("moviendo"); };
+    th.ondragend = () => { th.classList.remove("moviendo"); ths.forEach(x => x.classList.remove("destino")); };
+    th.ondragover = e => { if (origen && origen !== th.dataset.k) { e.preventDefault(); th.classList.add("destino"); } };
+    th.ondragleave = () => th.classList.remove("destino");
+    th.ondrop = e => {
+      e.preventDefault();
+      const destino = th.dataset.k;
+      if (!origen || origen === destino) return;
+      const orden = cols.map(c => c.k).filter(k => k !== origen);
+      orden.splice(orden.indexOf(destino), 0, origen);      // la columna arrastrada queda delante de la de destino
+      try { localStorage.setItem("cols:" + clave, JSON.stringify(orden)); } catch (err) { /* sin almacenamiento: no se guarda */ }
+      recargar();
+    };
+  });
+  const b = $("#colsReset");
+  if (b) b.onclick = () => { try { localStorage.removeItem("cols:" + clave); } catch (err) { /* nada */ } recargar(); };
+}
+
 function tabla(cols, filas, opt = {}) {
   if (!filas.length) return `<div class="tabla"><div class="vacio">${esc(opt.vacio || "Sin datos.")}</div></div>`;
-  const th = cols.map(c => `<th class="${c.num ? "num" : ""}">${esc(c.t)}</th>`).join("");
+  const th = cols.map(c => `<th class="${c.num ? "num" : ""}${opt.mover ? " movible" : ""}" ${opt.mover ? `draggable="true" data-k="${esc(c.k)}" title="Arrastrá para mover la columna"` : ""}>${esc(c.t)}</th>`).join("");
   const tr = filas.map((f, i) => {
     const tds = cols.map(c => {
       const v = c.f ? c.f(f) : esc(f[c.k]);
@@ -833,6 +865,11 @@ async function vistaLineas(estado, cfg) {
   const opcCond = (lista, sel) => lista.map(c => `<option value="${esc(c)}" ${c === sel ? "selected" : ""}>${c === "-" ? "Sin dato" : esc(c)}</option>`).join("");
   const d = await api("/api/lineas?" + qs({ ...par, limite: S.limite, desde: S.pagina * S.limite }));
   S.filas = d.filas;
+  const colsLineas = ordenarCols([...COLS_LINEA.slice(0, -1),
+    { k: "resp_fiscal", t: "Cond. profesional" },
+    ...(d.cond_afil.some(c => c !== "-") ? [{ k: "cond_afiliado", t: "Cond. afiliado" }] : []),
+    { k: "iva", t: "IVA", f: f => f.iva === null || f.iva === undefined ? "" : `<span class="et ${f.iva ? "ok" : ""}">${esc(f.iva)}</span>` },
+    COLS_LINEA[COLS_LINEA.length - 1]], "lineas");
   const recargar = () => vistaLineas(estado, cfg).catch(fallo);
   $("#lista").innerHTML = `
     <div class="banda"><div class="kpis"><div class="kpi"><span>Líneas</span><b>${miles(d.total)}</b></div>
@@ -851,13 +888,12 @@ async function vistaLineas(estado, cfg) {
       ${paginador(d.total)}<span class="sep"></span>
       ${conIva && d.total ? `<button class="btn" id="selFiltradas">Seleccionar las ${miles(d.total)} filtradas</button>` : ""}
       <a class="btn" href="/api/lineas/exportar?${qs(par)}">Exportar Excel</a>
+      ${ordenGuardado("lineas").length ? `<button class="btn" id="colsReset">Restablecer columnas</button>` : ""}
     </div>
-    ${tabla([...COLS_LINEA.slice(0, -1),
-      { k: "resp_fiscal", t: "Cond. profesional" },
-      ...(d.cond_afil.some(c => c !== "-") ? [{ k: "cond_afiliado", t: "Cond. afiliado" }] : []),
-      { k: "iva", t: "IVA", f: f => f.iva === null || f.iva === undefined ? "" : `<span class="et ${f.iva ? "ok" : ""}">${esc(f.iva)}</span>` },
-      COLS_LINEA[COLS_LINEA.length - 1]], d.filas, { sel: true, vacio: (F.prof || F.nro || F.q || F.periodo || F.cruce || F.rf || F.afil) ? "Ninguna línea coincide con los filtros." : cfg.vacio, acciones: cfg.acciones })}`;
+    <p class="suave sinMargen">Para cambiar el orden de las columnas, arrastrá el encabezado de una columna hasta el lugar donde la querés. El orden queda guardado en este navegador.</p>
+    ${tabla(colsLineas, d.filas, { sel: true, mover: true, vacio: (F.prof || F.nro || F.q || F.periodo || F.cruce || F.rf || F.afil) ? "Ninguna línea coincide con los filtros." : cfg.vacio, acciones: cfg.acciones })}`;
   enlazarPaginador(recargar);
+  enlazarColumnas("lineas", colsLineas, recargar);
   if ($("#fRf")) $("#fRf").onchange = e => { F.rf = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fAfil")) $("#fAfil").onchange = e => { F.afil = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fCods")) $("#fCods").onchange = e => { F.cods = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
@@ -1094,13 +1130,13 @@ VISTAS.present = async () => {
         <label>Archivo «PrestacionesExport»<input type="file" id="cArch" accept=".xlsx,.xls,.csv"></label>
         <label>Período (MMAAAA)<input id="cPer" value="${periodoPorDefecto()}" maxlength="6" size="8"></label>
         <label>N° de factura (opcional)<input id="cFac" placeholder="0005-00004519" size="16"></label>
-        ${conVal ? `<label>${galeno ? "Archivo validado de Galeno" : "Reporte de liquidación de Swiss"} (coseguros, opcional)<input type="file" id="cVal" accept=".xlsx,.xls,.csv"></label>` : ""}
+        ${conVal ? `<label>${galeno ? "Archivo validado de Galeno (coseguros, opcional)" : "Archivo de Swiss Medical tal como sale de la obra social (coseguros)"}<input type="file" id="cVal" accept=".xlsx,.xls,.csv"></label>` : ""}
         <button class="btn primario" id="cIniciar">Iniciar conversor</button>
       </div>
-      <p class="suave">Si el export trae varias obras sociales, indicá el N° de factura de ${NOMBRES[S.os]} para convertir solo esas filas.${galeno ? " El importe del anexo es el total menos el coseguro de cada transacción; los coseguros se toman del archivo validado cargado en Pre-facturación, o del que subas acá." : ""}${swiss ? " Se agrega la columna MP al lado de Matricula y la columna Total a continuación de IVA: Honorario menos el coseguro de esa transacción (se busca por número de transacción en el reporte de liquidación cargado en Pre-facturación, o en el que subas acá), multiplicado por 1,105 cuando IVA es 1." : ""}</p>
+      <p class="suave">Si el export trae varias obras sociales, indicá el N° de factura de ${NOMBRES[S.os]} para convertir solo esas filas.${galeno ? " El importe del anexo es el total menos el coseguro de cada transacción; los coseguros se toman del archivo validado cargado en Pre-facturación, o del que subas acá." : ""}${swiss ? " Al archivo de facturación se le agregan dos columnas: MP (matrícula del padrón) al lado de Matricula, y Total a continuación de IVA = Honorarios + IVA − Coseguro. El IVA es el 10,5 % del honorario cuando la columna IVA vale 1. El coseguro se busca por número de transacción en el archivo de Swiss: el que subas acá o, si no subís ninguno, el que ya esté cargado en Pre-facturación." : ""}</p>
       <div id="cRes"></div>
     </div>
-    <div class="tarjeta"><h3>2 · Descargar y presentar</h3>
+    <div class="tarjeta"><h3>${swiss ? "2 · Descargar el archivo de facturación modificado" : "2 · Descargar y presentar"}</h3>
       <div class="fila"><button class="btn ok" id="cDesc" disabled>${galeno ? "Descargar Anexo de prestaciones" : "Descargar archivo convertido"}</button>
       ${link ? `<a class="enlace" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(link)}</a>` : ""}</div>
       ${link ? `<p class="suave">Al descargar se abre el portal de ${NOMBRES[S.os]} en otra pestaña.</p>` : ""}
@@ -1118,7 +1154,7 @@ VISTAS.present = async () => {
       const sinN = +r.headers.get("X-Sin-MP-N") || 0, sin = decodeURIComponent(r.headers.get("X-Sin-MP") || "");
       $("#cRes").innerHTML = `<div class="aviso ok sinMargen" role="status">${ICO.ok}${miles(r.headers.get("X-Filas"))} filas convertidas → <b>${esc(nombre)}</b></div>
         ${conVal ? `<div class="aviso info">Coseguros descontados: ${pesos(r.headers.get("X-Coseguro-Total"))} en ${miles(r.headers.get("X-Coseguro-Filas"))} fila(s).</div>` : ""}
-        ${swiss ? `<div class="aviso info">Honorarios: ${pesos(r.headers.get("X-Honorarios"))} · filas con IVA 1 (× 1,105): ${miles(r.headers.get("X-Con-Iva"))} · <b>Total: ${pesos(r.headers.get("X-Total"))}</b></div>` : ""}
+        ${swiss ? `<div class="aviso info">Honorarios ${pesos(r.headers.get("X-Honorarios"))} + IVA ${pesos(r.headers.get("X-Iva-Total"))} (${miles(r.headers.get("X-Con-Iva"))} filas con IVA 1) − coseguros ${pesos(r.headers.get("X-Coseguro-Total"))} = <b>Total ${pesos(r.headers.get("X-Total"))}</b></div>` : ""}
         ${conVal && +r.headers.get("X-Sin-Cruce-N") ? `<div class="aviso">${miles(r.headers.get("X-Sin-Cruce-N"))} transacción(es) del export no están en el archivo validado (ej: ${esc(decodeURIComponent(r.headers.get("X-Sin-Cruce") || ""))}): en esas filas no se descontó coseguro. Subí el archivo validado de ese período y volvé a convertir.</div>` : ""}
         ${conVal && r.headers.get("X-Excedidos") ? `<div class="aviso mal">El coseguro supera al importe en: ${esc(decodeURIComponent(r.headers.get("X-Excedidos")))}. Esas filas quedaron en 0; revisalas.</div>` : ""}
         ${+r.headers.get("X-Sin-Esp-N") ? `<div class="aviso">${r.headers.get("X-Sin-Esp-N")} cuenta(s) sin especialidad en el padrón: ${esc(decodeURIComponent(r.headers.get("X-Sin-Esp") || ""))}. La columna Especialidad queda vacía en esas filas.</div>` : ""}
