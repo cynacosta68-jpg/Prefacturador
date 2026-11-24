@@ -1185,7 +1185,7 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
         raise HTTPException(400, "AVALIAN no requiere conversión.")
     A(u, "presentacion.convertir", os_key, "presentacion", periodo, archivo=nombre, salida=archivo_out,
       factura=factura, filas=info["filas"], cuentas_sin_mp=info["sin_mp"],
-      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido", "honorarios", "total", "con_iva", "iva_total") if k in info})
+      **{k: info[k] for k in ("coseguro_total", "coseguro_filas", "sin_cruce", "coseguro_excedido", "honorarios", "total", "con_iva", "iva_total", "gravado", "exento", "facturado") if k in info})
     return _descarga(salida, archivo_out, {"X-Filas": str(info["filas"]),
                                            "X-Sin-MP": quote(", ".join(info["sin_mp"][:60])),
                                            "X-Sin-MP-N": str(len(info["sin_mp"])),
@@ -1193,6 +1193,8 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
                                            "X-Sin-Esp-N": str(len(info.get("sin_especialidad", []))),
                                            "X-Honorarios": str(info.get("honorarios", "")), "X-Total": str(info.get("total", "")),
                                            "X-Con-Iva": str(info.get("con_iva", "")), "X-Iva-Total": str(info.get("iva_total", "")),
+                                           "X-Gravado": str(info.get("gravado", "")), "X-Exento": str(info.get("exento", "")),
+                                           "X-Facturado": str(info.get("facturado", "")), "X-Excedidos-N": str(len(info.get("coseguro_excedido", []))),
                                            "X-Coseguro-Total": str(info.get("coseguro_total", "")),
                                            "X-Coseguro-Filas": str(info.get("coseguro_filas", "")),
                                            "X-Sin-Cruce-N": str(info.get("sin_cruce", "")),
@@ -1214,6 +1216,17 @@ async def fin_copias(request: Request, u=Auth):
     cc = financiadores.guardar_copias((await request.json()).get("cc", ""))
     A(u, "financiadores.copias", None, "ajuste", None, antes=antes, despues=cc)
     return {"cc": cc}
+
+
+@app.delete("/api/financiadores/entregas")
+def fin_entregas_borrar(id: int = 0, u=Admin):
+    """Elimina una presentación registrada (o todas si no se indica cuál). Solo administradores."""
+    filas = financiadores.borrar_entregas(id or None)
+    if id and not filas:
+        raise HTTPException(404, "Presentación inexistente.")
+    A(u, "financiadores.borrar_presentaciones", None, "presentacion", id or None, cantidad=len(filas),
+      presentaciones=[{k: f[k] for k in ("numero", "nombre", "periodo", "factura", "importe", "via", "fecha", "usuario")} for f in filas[:300]])
+    return {"eliminadas": len(filas)}
 
 
 @app.post("/api/financiadores/importar")
@@ -1257,9 +1270,13 @@ def fin_baja(fid: int, u=Auth):
 
 @app.post("/api/financiadores/{fid}/presentar")
 async def fin_presentar(fid: int, request: Request, u=Auth):
-    """Registra la presentación y devuelve el portal con sus credenciales o el mail armado."""
-    r = financiadores.presentar(fid, await request.json(), u["usuario"])
-    A(u, "financiadores.presentar", None, "financiador", fid, financiador=r["nombre"], via=r["via"], periodo=r["periodo"],
+    """Prepara la presentación (vista previa) o, con «confirmar», genera el número y la deja registrada.
+    Se confirma cuando el usuario abre el correo o el portal."""
+    d = await request.json()
+    confirmar = bool(d.get("confirmar"))
+    r = financiadores.presentar(fid, d, u["usuario"], registrar=confirmar)
+    A(u, "financiadores.presentar" if confirmar else "financiadores.preparar_presentacion", None, "financiador", fid,
+      financiador=r["nombre"], via=r["via"], periodo=r["periodo"],
       factura=r["factura"], importe=r["importe"], link=r["link"], numero=r["numero"],
       **({"credenciales_mostradas": True} if r["via"] == "portal" else {"para": r["para"], "cc": r["cc"]}))
     return r

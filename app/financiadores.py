@@ -240,9 +240,10 @@ def periodo_legible(periodo):
     return f"{periodo[:2]}/{periodo[2:]}"
 
 
-def presentar(fid, d, usuario):
-    """Registra la presentación y devuelve lo necesario para hacerla: el portal con sus credenciales
-    y/o el mail armado (destinatarios, asunto y cuerpo)."""
+def presentar(fid, d, usuario, registrar=True):
+    """Devuelve lo necesario para presentar: el portal con sus credenciales o el mail armado.
+    Con `registrar` genera además el número de presentación y deja el registro; sin él solo prepara
+    la vista previa (se usa antes de que el usuario abra el correo o el portal)."""
     f = db.q1("SELECT * FROM financiadores WHERE id=?", (fid,))
     if not f:
         raise ValueError("Financiador inexistente.")
@@ -274,11 +275,13 @@ def presentar(fid, d, usuario):
     cc = limpiar_mails(d.get("cc")) if d.get("cc") is not None else copias()
     if via != "mail":
         cc = ""
-    with db.tx() as c:
-        eid = c.execute("INSERT INTO entregas(financiador_id,nombre,periodo,factura,importe,link,via,fecha,usuario,cc) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (fid, f["nombre"], periodo, factura, importe, link, via, ahora, usuario, cc)).lastrowid
-        numero = f"P-{eid:06d}"          # número de presentación: correlativo y único
-        c.execute("UPDATE entregas SET numero=? WHERE id=?", (numero, eid))
+    eid, numero = None, ""
+    if registrar:
+        with db.tx() as c:
+            eid = c.execute("INSERT INTO entregas(financiador_id,nombre,periodo,factura,importe,link,via,fecha,usuario,cc) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (fid, f["nombre"], periodo, factura, importe, link, via, ahora, usuario, cc)).lastrowid
+            numero = f"P-{eid:06d}"          # número de presentación: correlativo y único
+            c.execute("UPDATE entregas SET numero=? WHERE id=?", (numero, eid))
     r = {"id": eid, "numero": numero, "via": via, "nombre": f["nombre"], "periodo": periodo, "factura": factura,
          "importe": importe, "link": link}
     if via == "portal":
@@ -290,11 +293,24 @@ def presentar(fid, d, usuario):
                   "Se adjunta:\n"
                   "1) Facturación\n"
                   "2) Detalle de prestaciones\n"
-                  f"3) Link de facturación: {link or '(sin link)'}\n\n"
-                  f"N° de presentación: {numero}\n")
+                  f"3) Link de facturación: {link or '(sin link)'}\n"
+                  + (f"\nN° de presentación: {numero}\n" if numero else ""))
         para = limpiar_mails(f["mails"])
         r.update(para=para, cc=cc, asunto=asunto, cuerpo=cuerpo,
                  mailto="mailto:" + quote(para.replace("; ", ","), safe="@,") + "?"
                  + (("cc=" + quote(cc.replace("; ", ","), safe="@,") + "&") if cc else "")
                  + "subject=" + quote(asunto) + "&body=" + quote(cuerpo))
     return r
+
+
+def borrar_entregas(eid=None):
+    """Elimina una presentación registrada, o todas. Si no queda ninguna, la numeración vuelve a empezar."""
+    with db.tx() as c:
+        filas = [dict(r) for r in (c.execute("SELECT * FROM entregas WHERE id=?", (eid,)) if eid else c.execute("SELECT * FROM entregas")).fetchall()]
+        if eid:
+            c.execute("DELETE FROM entregas WHERE id=?", (eid,))
+        else:
+            c.execute("DELETE FROM entregas")
+        if not c.execute("SELECT COUNT(*) FROM entregas").fetchone()[0]:
+            c.execute("DELETE FROM sqlite_sequence WHERE name='entregas'")
+    return filas

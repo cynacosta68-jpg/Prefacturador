@@ -1137,7 +1137,7 @@ VISTAS.present = async () => {
         ${conVal ? `<label>${galeno ? "Archivo validado de Galeno (coseguros, opcional)" : "Archivo de Swiss Medical tal como sale de la obra social (coseguros)"}<input type="file" id="cVal" accept=".xlsx,.xls,.csv"></label>` : ""}
         <button class="btn primario" id="cIniciar">Iniciar conversor</button>
       </div>
-      <p class="suave">Si el export trae varias obras sociales, indicá el N° de factura de ${NOMBRES[S.os]} para convertir solo esas filas.${galeno ? " El importe del anexo es el total menos el coseguro de cada transacción; los coseguros se toman del archivo validado cargado en Pre-facturación, o del que subas acá." : ""}${swiss ? " Al archivo de facturación se le agregan dos columnas: MP (matrícula del padrón) al lado de Matricula, y Total a continuación de IVA = Honorarios + IVA − Coseguro. El IVA es el 10,5 % del honorario cuando la columna IVA vale 1. El coseguro se busca por número de transacción en el archivo de Swiss: el que subas acá o, si no subís ninguno, el que ya esté cargado en Pre-facturación." : ""}</p>
+      <p class="suave">Si el export trae varias obras sociales, indicá el N° de factura de ${NOMBRES[S.os]} para convertir solo esas filas.${galeno ? " El importe del anexo es el total menos el coseguro de cada transacción; los coseguros se toman del archivo validado cargado en Pre-facturación, o del que subas acá." : ""}${swiss ? " Al archivo de facturación se le agregan dos columnas: MP (matrícula del padrón) al lado de Matricula, y Total a continuación de IVA = (Honorarios − Coseguro) + IVA. El IVA es el 10,5 % de ese neto cuando la columna IVA vale 1; el coseguro se descuenta completo. El coseguro se busca por número de transacción en el archivo de Swiss: el que subas acá o, si no subís ninguno, el que ya esté cargado en Pre-facturación." : ""}</p>
       <div id="cRes"></div>
     </div>
     <div class="tarjeta"><h3>${swiss ? "2 · Descargar el archivo de facturación modificado" : "2 · Descargar y presentar"}</h3>
@@ -1157,10 +1157,19 @@ VISTAS.present = async () => {
       listo = { blob: await r.blob(), nombre };
       const sinN = +r.headers.get("X-Sin-MP-N") || 0, sin = decodeURIComponent(r.headers.get("X-Sin-MP") || "");
       $("#cRes").innerHTML = `<div class="aviso ok sinMargen" role="status">${ICO.ok}${miles(r.headers.get("X-Filas"))} filas convertidas → <b>${esc(nombre)}</b></div>
-        ${conVal ? `<div class="aviso info">Coseguros descontados: ${pesos(r.headers.get("X-Coseguro-Total"))} en ${miles(r.headers.get("X-Coseguro-Filas"))} fila(s).</div>` : ""}
-        ${swiss ? `<div class="aviso info">Honorarios ${pesos(r.headers.get("X-Honorarios"))} + IVA ${pesos(r.headers.get("X-Iva-Total"))} (${miles(r.headers.get("X-Con-Iva"))} filas con IVA 1) − coseguros ${pesos(r.headers.get("X-Coseguro-Total"))} = <b>Total ${pesos(r.headers.get("X-Total"))}</b></div>` : ""}
+        ${galeno ? `<div class="aviso info">Coseguros descontados: ${pesos(r.headers.get("X-Coseguro-Total"))} en ${miles(r.headers.get("X-Coseguro-Filas"))} fila(s).</div>` : ""}
+        ${swiss ? `<dl class="detalleFila">
+          <div><dt>Total honorarios</dt><dd>${pesos(r.headers.get("X-Honorarios"))}</dd></div>
+          <div><dt>Total coseguro</dt><dd>${pesos(r.headers.get("X-Coseguro-Total"))}</dd></div>
+          <div><dt>Importe facturado (honorarios − coseguro)</dt><dd>${pesos(r.headers.get("X-Facturado"))}</dd></div>
+          <div><dt>Importe gravado (${miles(r.headers.get("X-Con-Iva"))} filas con IVA 1)</dt><dd>${pesos(r.headers.get("X-Gravado"))}</dd></div>
+          <div><dt>Importe exento</dt><dd>${pesos(r.headers.get("X-Exento"))}</dd></div>
+          <div><dt>Importe IVA (10,5 % del gravado)</dt><dd>${pesos(r.headers.get("X-Iva-Total"))}</dd></div>
+          <div><dt>Importe final (suma de la columna Total)</dt><dd><b>${pesos(r.headers.get("X-Total"))}</b></dd></div>
+        </dl>` : ""}
         ${conVal && +r.headers.get("X-Sin-Cruce-N") ? `<div class="aviso">${miles(r.headers.get("X-Sin-Cruce-N"))} transacción(es) del export no están en el archivo validado (ej: ${esc(decodeURIComponent(r.headers.get("X-Sin-Cruce") || ""))}): en esas filas no se descontó coseguro. Subí el archivo validado de ese período y volvé a convertir.</div>` : ""}
-        ${conVal && r.headers.get("X-Excedidos") ? `<div class="aviso mal">El coseguro supera al importe en: ${esc(decodeURIComponent(r.headers.get("X-Excedidos")))}. Esas filas quedaron en 0; revisalas.</div>` : ""}
+        ${swiss && +r.headers.get("X-Excedidos-N") ? `<div class="aviso">En ${miles(r.headers.get("X-Excedidos-N"))} fila(s) el coseguro es mayor que el honorario, así que su Total queda negativo (se descuenta completo, igual que en el sistema de facturación): ${esc(decodeURIComponent(r.headers.get("X-Excedidos")))}.</div>` : ""}
+        ${galeno && r.headers.get("X-Excedidos") ? `<div class="aviso mal">El coseguro supera al importe en: ${esc(decodeURIComponent(r.headers.get("X-Excedidos")))}. Esas filas quedaron en 0; revisalas.</div>` : ""}
         ${+r.headers.get("X-Sin-Esp-N") ? `<div class="aviso">${r.headers.get("X-Sin-Esp-N")} cuenta(s) sin especialidad en el padrón: ${esc(decodeURIComponent(r.headers.get("X-Sin-Esp") || ""))}. La columna Especialidad queda vacía en esas filas.</div>` : ""}
         ${sinN ? `<div class="aviso">${sinN} cuenta(s) sin matrícula (MP) en el padrón: ${esc(sin)}${sinN > 60 ? "…" : ""}. Cargalas en Padrón y volvé a convertir.</div>` : ""}`;
       $("#cDesc").disabled = false;
@@ -1356,12 +1365,19 @@ VISTAS.financiadores = async () => {
   $("#fNuevo").onclick = () => form(null);
   $$("[data-ed]").forEach(x => x.onclick = () => form(d.filas.find(f => f.id === +x.dataset.ed)));
 
-  // ── resultado de la presentación: portal con credenciales, o mail armado
-  const mostrarPortal = r => {
-    modal(`<h3>Presentación N° ${esc(r.numero)} · por portal · ${esc(r.nombre)}</h3>
-      <p>Quedó registrada la presentación <b>${esc(r.numero)}</b> del período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}.</p>
+  // ── vista previa de la presentación. El número y el registro se generan recién cuando se abre
+  //    el correo o el portal (confirmar): hasta ahí no queda nada guardado.
+  const confirmarPresentacion = async (f, datos) => {
+    const r = await api(`/api/financiadores/${f.id}/presentar`, { json: { ...datos, confirmar: true } });
+    toast(`Presentación ${r.numero} registrada`);
+    VISTAS.financiadores().catch(fallo);
+    return r;
+  };
+  const mostrarPortal = (f, datos, r) => {
+    modal(`<h3>Presentación por portal · ${esc(r.nombre)}</h3>
+      <p id="pEstado">Período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}. <b>Todavía no está registrada</b>: el número de presentación se genera al tocar «Abrir el portal».</p>
       <dl class="detalleFila">
-        <div><dt>Portal</dt><dd><a class="enlace" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.url)}</a></dd></div>
+        <div><dt>Portal</dt><dd>${esc(r.url)}</dd></div>
         <div><dt>Usuario</dt><dd><code id="pUsu">${esc(r.usuario || "—")}</code> ${r.usuario ? `<button class="btn mini" id="cUsu">Copiar</button>` : ""}</dd></div>
         <div><dt>Contraseña</dt><dd>${r.clave ? `<code id="pCla">●●●●●●●●</code> <button class="btn mini" id="vCla">Mostrar</button> <button class="btn mini" id="cCla">Copiar</button>` : `<span class="et avi">no está cargada</span>`}</dd></div>
         ${r.link ? `<div><dt>Documentación</dt><dd><a class="enlace" href="${esc(r.link)}" target="_blank" rel="noopener noreferrer">${esc(r.link)}</a> <button class="btn mini" id="cLink">Copiar</button></dd></div>` : ""}
@@ -1371,20 +1387,40 @@ VISTAS.financiadores = async () => {
     if ($("#cUsu")) $("#cUsu").onclick = () => copiar(r.usuario, "Usuario");
     if ($("#cCla")) { $("#cCla").onclick = () => copiar(r.clave, "Contraseña"); $("#vCla").onclick = () => { const c = $("#pCla"), ver = c.textContent.startsWith("●"); c.textContent = ver ? r.clave : "●●●●●●●●"; $("#vCla").textContent = ver ? "Ocultar" : "Mostrar"; }; }
     if ($("#cLink")) $("#cLink").onclick = () => copiar(r.link, "Link");
-    $("#pAbrir").onclick = async () => { if (r.usuario) await copiar(r.usuario, "Usuario"); window.open(r.url, "_blank", "noopener"); };
+    let hecha = null;
+    $("#pAbrir").onclick = async () => {
+      const ventana = window.open("about:blank", "_blank");      // se abre ya, dentro del clic, para que el navegador no la bloquee
+      try {
+        if (!hecha) hecha = await confirmarPresentacion(f, datos);
+        $("#pEstado").innerHTML = `Presentación <b>${esc(hecha.numero)}</b> registrada: período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}.`;
+        $("#pAbrir").textContent = "Volver a abrir el portal";
+        if (r.usuario) copiar(r.usuario, "Usuario");
+        if (ventana) { ventana.opener = null; ventana.location.href = r.url; } else window.open(r.url, "_blank", "noopener");
+      } catch (err) { if (ventana) ventana.close(); fallo(err); }
+    };
   };
-  const mostrarMail = r => {
-    modal(`<h3>Presentación N° ${esc(r.numero)} · por mail · ${esc(r.nombre)}</h3>
-      <p>Quedó registrada la presentación <b>${esc(r.numero)}</b> del período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}.</p>
+  const mostrarMail = (f, datos, r) => {
+    modal(`<h3>Presentación por mail · ${esc(r.nombre)}</h3>
+      <p id="mEstado">Período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}. <b>Todavía no está registrada</b>: el número de presentación se genera al tocar «Abrir en el correo» y se agrega al pie del mensaje.</p>
       <dl class="detalleFila">
         <div><dt>Para</dt><dd>${esc(r.para)}</dd></div>
         <div><dt>Con copia</dt><dd>${esc(r.cc || "—")}</dd></div>
         <div><dt>Asunto</dt><dd>${esc(r.asunto)}</dd></div>
       </dl>
       <pre class="log" id="mCuerpo">${esc(r.cuerpo)}</pre>
-      <p class="suave">«Abrir en el correo» crea el mensaje con destinatarios, asunto y texto ya completos. Los adjuntos (la factura y el detalle de prestaciones) hay que agregarlos en el correo: un enlace no puede adjuntar archivos.</p>
-      <div class="pie"><button class="btn" data-cerrar>Cerrar</button><button class="btn" id="mCopiar">Copiar el texto</button><a class="btn primario" href="${esc(r.mailto)}">Abrir en el correo</a></div>`);
-    $("#mCopiar").onclick = () => copiar(`Para: ${r.para}\nCC: ${r.cc}\nAsunto: ${r.asunto}\n\n${r.cuerpo}`, "Texto del mail");
+      <p class="suave">«Abrir en el correo» crea el mensaje con destinatarios, copias, asunto y texto ya completos. Los adjuntos (la factura y el detalle de prestaciones) hay que agregarlos en el correo: un enlace no puede adjuntar archivos.</p>
+      <div class="pie"><button class="btn" data-cerrar>Cerrar</button><button class="btn" id="mCopiar" disabled>Copiar el texto</button><button class="btn primario" id="mAbrir">Abrir en el correo</button></div>`);
+    let hecha = null;
+    $("#mAbrir").onclick = async () => {
+      try {
+        if (!hecha) hecha = await confirmarPresentacion(f, datos);
+        $("#mEstado").innerHTML = `Presentación <b>${esc(hecha.numero)}</b> registrada: período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}.`;
+        $("#mCuerpo").textContent = hecha.cuerpo;
+        $("#mCopiar").disabled = false; $("#mAbrir").textContent = "Volver a abrir el correo";
+        window.location.href = hecha.mailto;
+      } catch (err) { fallo(err); }
+    };
+    $("#mCopiar").onclick = () => hecha && copiar(`Para: ${hecha.para}\nCC: ${hecha.cc}\nAsunto: ${hecha.asunto}\n\n${hecha.cuerpo}`, "Texto del mail");
   };
 
   // ── presentar
@@ -1404,6 +1440,7 @@ VISTAS.financiadores = async () => {
         <label>Link de la documentación<input name="link" type="url" placeholder="https://…"></label>
         ${porMail ? `<label>Con copia a (mail)<input name="cc" value="${esc(d.cc || "")}"></label>` : ""}</div>
         ${!porPortal && !porMail ? `<div class="aviso mal sinMargen">Esta obra social no tiene portal ni mails cargados. Completalos con «Editar».</div>` : ""}
+        <p class="suave">Este paso solo prepara la presentación. Se registra y se le asigna número cuando abrís el correo o el portal.</p>
         <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button>
           ${porMail ? `<button class="btn ${porPortal ? "" : "primario"}" data-via="mail">Presentar por mail</button>` : ""}
           ${porPortal ? `<button class="btn primario" data-via="portal">Presentar por portal</button>` : ""}</div></form>`);
@@ -1413,26 +1450,36 @@ VISTAS.financiadores = async () => {
       datos.via = (e.submitter && e.submitter.dataset.via) || (porPortal ? "portal" : "mail");
       F.per = datos.periodo;
       try {
-        const r = await api(`/api/financiadores/${f.id}/presentar`, { json: datos });
-        await VISTAS.financiadores();
-        (r.via === "portal" ? mostrarPortal : mostrarMail)(r);
+        const r = await api(`/api/financiadores/${f.id}/presentar`, { json: datos });      // vista previa: no registra
+        (r.via === "portal" ? mostrarPortal : mostrarMail)(f, datos, r);
       } catch (err) { fallo(err); }
     };
   };
   $$("[data-presentar]").forEach(x => x.onclick = () => presentar(d.filas.find(f => f.id === +x.dataset.presentar)));
 
-  // ── historial
-  $("#fHist").onclick = async () => {
+  // ── historial (un administrador puede borrar presentaciones, por ejemplo las de prueba)
+  const historial = async () => {
     try {
-      const h = await api("/api/financiadores/entregas");
+      const h = await api("/api/financiadores/entregas"), admin = S.me.rol === "admin";
       modal(`<h3>Presentaciones realizadas</h3>
         ${tabla([{ k: "numero", t: "N° presentación", f: x => `<b>${esc(x.numero || "")}</b>` }, { k: "fecha", t: "Fecha" }, { k: "nombre", t: "Obra social" }, { k: "periodo", t: "Período" }, { k: "factura", t: "Factura" },
           { k: "importe", t: "Importe", num: true, f: x => pesos(x.importe) }, { k: "via", t: "Por" },
           { k: "link", t: "Documentación", f: x => x.link ? `<a class="enlace" href="${esc(x.link)}" target="_blank" rel="noopener noreferrer">abrir</a>` : "" },
-          { k: "usuario", t: "Usuario" }], h.filas, { vacio: "Todavía no se registró ninguna presentación." })}
-        <div class="pie"><button class="btn primario" data-cerrar>Cerrar</button></div>`);
+          { k: "usuario", t: "Usuario" }], h.filas, { vacio: "Todavía no se registró ninguna presentación.",
+          acciones: admin ? x => `<button class="btn mini peligro" data-borrar="${x.id}">Eliminar</button>` : null })}
+        <div class="pie">${admin && h.filas.length ? `<button class="btn peligro" id="hTodas">Eliminar todas</button><span class="sep"></span>` : ""}<button class="btn primario" data-cerrar>Cerrar</button></div>`);
+      $$("[data-borrar]").forEach(x => x.onclick = async () => {
+        const e = h.filas.find(y => y.id === +x.dataset.borrar);
+        if (!await confirmar(`¿Eliminar la presentación ${e.numero} de ${e.nombre}?`, "Eliminar", "peligro")) return historial();
+        try { await api("/api/financiadores/entregas?id=" + e.id, { method: "DELETE" }); toast("Presentación eliminada"); await VISTAS.financiadores(); historial(); } catch (err) { fallo(err); }
+      });
+      if ($("#hTodas")) $("#hTodas").onclick = async () => {
+        if (!await confirmar(`¿Eliminar las ${miles(h.filas.length)} presentaciones registradas? La numeración vuelve a empezar en P-000001. Queda anotado en la auditoría.`, "Eliminar todas", "peligro")) return historial();
+        try { const r = await api("/api/financiadores/entregas", { method: "DELETE" }); toast(`${miles(r.eliminadas)} presentación(es) eliminadas`); VISTAS.financiadores().catch(fallo); } catch (err) { fallo(err); }
+      };
     } catch (err) { fallo(err); }
   };
+  $("#fHist").onclick = historial;
 };
 
 

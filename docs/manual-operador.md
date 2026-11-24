@@ -464,11 +464,13 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
   se tildan las filas —o la casilla de la cabecera para todas las de la página— y «Eliminar seleccionadas».
   Pide confirmación y deja en la auditoría lo que se borró.
 - **Presentaciones (SWISS)**: conversor del «PrestacionesExport»: agrega la columna **MP** (matrícula del padrón) al
-  lado de Matricula, igual que SANCOR, y la columna **Total** a continuación de IVA = Honorarios + IVA − Coseguro
-  (el IVA es el 10,5 % del honorario cuando la columna IVA vale 1). El coseguro es la columna Copago del reporte de
+  lado de Matricula, igual que SANCOR, y la columna **Total** a continuación de IVA = (Honorarios − Coseguro) + IVA.
+  El IVA es el 10,5 % de ese neto cuando la columna IVA vale 1, y el coseguro se descuenta completo aunque supere
+  al honorario de la fila. Así cierran las cifras del sistema de facturación: importe facturado = honorarios −
+  coseguros; IVA = 10,5 % del importe gravado; importe final = facturado + IVA. El coseguro es la columna Copago del reporte de
   liquidación, cruzada por número de transacción: se toma del reporte cargado en Pre-facturación o del que se
   suba en el momento. Informa honorarios, coseguros descontados, filas con IVA y total; avisa las transacciones
-  sin cruce y las que tienen un coseguro mayor al honorario (quedan en 0 para revisar).
+  sin cruce y las que tienen un coseguro mayor al honorario (su Total queda negativo).
 - **Templates**: un solo template con todas las líneas seleccionadas, sin dividir por cantidad de filas.
 - **Orden de las columnas**: en Pre-facturación, Facturación y Emitidas se puede arrastrar el encabezado de una columna
   hasta otro lugar; el orden queda guardado en ese navegador y «Restablecer columnas» vuelve al original.
@@ -499,8 +501,11 @@ obras sociales y sus datos de presentación: referentes, plazo máximo, mails, t
     que usuario y contraseña se pegan.
   - **Por mail**: arma el mensaje con los destinatarios de la obra social, el asunto `Facturacion Mensual_<período>`
     y el texto con el link de la documentación, y lo abre en el programa de correo. Los adjuntos se agregan ahí.
-- **Número de presentación**: cada presentación recibe un número correlativo y único (P-000001, P-000002…), que se
-  muestra al presentar, queda en «Presentaciones realizadas» y en la auditoría, y va al pie del mail.
+- **Número de presentación**: «Presentar» solo prepara y muestra la presentación. El número correlativo (P-000001,
+  P-000002…) y el registro se generan recién al tocar **«Abrir en el correo»** o **«Abrir el portal»**; si se cierra
+  antes, no queda nada. El número va al pie del mail, a «Presentaciones realizadas» y a la auditoría.
+- **Borrar presentaciones**: en «Presentaciones realizadas» un administrador puede eliminar una presentación o todas
+  (por ejemplo, las de prueba). Si no queda ninguna, la numeración vuelve a empezar en P-000001.
 - **Copias de los mails**: en cada presentación por mail van en copia las direcciones configuradas (se cambian con
   «Cambiar» en el Portal de Financiadores, o para un envío puntual en el formulario de presentación). El valor
   inicial sale de la variable `PRESENTACIONES_CC`.
