@@ -472,12 +472,42 @@ El Reporte de Liquidación de Swiss Medical no trae importes, así que la pre-fa
 - **Templates**: un solo template con todas las líneas seleccionadas, sin dividir por cantidad de filas.
 - **Orden de las columnas**: en Pre-facturación, Facturación y Emitidas se puede arrastrar el encabezado de una columna
   hasta otro lugar; el orden queda guardado en ese navegador y «Restablecer columnas» vuelve al original.
+- **Coseguro**: el coseguro o copago que informa el archivo de la obra social para cada transacción (columna Copago,
+  Coseguro o similar) se guarda en la línea, se ve en la columna «Coseguro» de Pre-facturación y Facturación (se
+  puede corregir al modificar la línea) y va a la columna **Coseguro** del template. Las presentaciones de GALENO y
+  SWISS descuentan ese mismo coseguro.
 - **Incremento %**: al modificar una línea (o varias a la vez) en Pre-facturación o Facturación se puede indicar
   un porcentaje sobre el valor unitario (negativo = descuento). Queda anotado en el origen del valor, en la
   observación de la línea y en la auditoría.
 - **Pre-facturación**: «Cruzar y valorizar según grilla» (sin EVWEB), «Cruzar y validar según EVWEB» y «Reiniciar».
 - **Datos extraídos EVWEB** (todas las obras sociales): botón «Quitar datos EVWEB»; si no se usa, el archivo
   del día 25 los retira solo.
+
+## 11 ter. Portal de Financiadores
+
+Módulo general (se entra desde la pantalla de inicio, para administradores y operadores) con el listado de las
+obras sociales y sus datos de presentación: referentes, plazo máximo, mails, teléfono, portal, usuario y modalidad
+(portal, mail, portal y mail, o entrega manual).
+
+- **Carga**: «Importar Excel» lee el archivo «Portal de OS» (solapa de contactos y, si está, la de seguimiento de
+  entregas, de donde toma la modalidad más usada). Actualiza por nombre y no borra lo que no viene en el archivo.
+  También se puede agregar y editar a mano.
+- **Presentar**: sobre la obra social elegida se cargan período, N° de factura, importe total y link de la
+  documentación. Queda registrado en «Presentaciones realizadas» y en la auditoría.
+  - **Por portal**: muestra la dirección, el usuario y la contraseña (oculta, con botones para copiar) y abre el
+    portal en otra pestaña. El navegador no permite que una página escriba en el formulario de otro sitio, así
+    que usuario y contraseña se pegan.
+  - **Por mail**: arma el mensaje con los destinatarios de la obra social, el asunto `Facturacion Mensual_<período>`
+    y el texto con el link de la documentación, y lo abre en el programa de correo. Los adjuntos se agregan ahí.
+- **Número de presentación**: cada presentación recibe un número correlativo y único (P-000001, P-000002…), que se
+  muestra al presentar, queda en «Presentaciones realizadas» y en la auditoría, y va al pie del mail.
+- **Copias de los mails**: en cada presentación por mail van en copia las direcciones configuradas (se cambian con
+  «Cambiar» en el Portal de Financiadores, o para un envío puntual en el formulario de presentación). El valor
+  inicial sale de la variable `PRESENTACIONES_CC`.
+- **Contraseñas de los portales**: se guardan cifradas; no aparecen en el listado, en la exportación ni en la
+  auditoría, y solo se muestran al presentar. La clave de cifrado sale de `PORTALES_KEY` o, si no está, del archivo
+  `/data/portales.key` que se crea solo. Ese archivo no va en las copias de seguridad de la base: hay que
+  resguardarlo aparte, porque sin él las contraseñas guardadas no se pueden leer.
 
 ## 12. Archivo mensual, auditoría y cuidado de los datos
 

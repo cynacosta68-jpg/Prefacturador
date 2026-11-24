@@ -112,6 +112,25 @@ CREATE TABLE IF NOT EXISTS otros_valores (
 );
 CREATE INDEX IF NOT EXISTS ix_otros ON otros_valores(os, codigo);
 
+-- Portal de Financiadores: contacto, portal y modalidad de presentación de cada obra social
+CREATE TABLE IF NOT EXISTS financiadores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL, ref_principal TEXT, ref_suplente TEXT, ref_os TEXT, ref_os2 TEXT,
+    plazo TEXT, mails TEXT, telefono TEXT, url_portal TEXT, usuario TEXT,
+    clave TEXT NOT NULL DEFAULT '',      -- contraseña del portal, cifrada
+    modalidad TEXT, notas TEXT, actualizado TEXT
+);
+-- Presentaciones hechas a cada financiador
+CREATE TABLE IF NOT EXISTS entregas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    financiador_id INTEGER NOT NULL, nombre TEXT, periodo TEXT, factura TEXT, importe REAL,
+    link TEXT, via TEXT, fecha TEXT, usuario TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_entregas ON entregas(financiador_id, id);
+
+-- Ajustes generales (por ejemplo, las copias de los mails de presentación)
+CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT);
+
 CREATE TABLE IF NOT EXISTS templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     os TEXT NOT NULL, periodo TEXT NOT NULL, nn INTEGER,
@@ -152,6 +171,16 @@ def conn():
             _conn.execute("ALTER TABLE lineas ADD COLUMN cod_propuesto TEXT")
             _conn.execute("ALTER TABLE lineas ADD COLUMN desc_propuesta TEXT")
             _conn.execute("UPDATE lineas SET cod_propuesto=cod_practica")
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(lineas)").fetchall()]
+        if "coseguro" not in cols:       # coseguro / copago que informa el archivo de la obra social para la transacción
+            _conn.execute("ALTER TABLE lineas ADD COLUMN coseguro REAL")
+            _conn.execute("UPDATE lineas SET coseguro=(SELECT SUM(c.copago) FROM coseguros c WHERE c.os=lineas.os AND c.nro=lineas.nro_transaccion "
+                          "AND (c.cod=lineas.cod_practica OR (SELECT COUNT(*) FROM coseguros x WHERE x.os=c.os AND x.nro=c.nro)=1))")
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(entregas)").fetchall()]
+        if "numero" not in cols:         # número de presentación y copias del mail
+            _conn.execute("ALTER TABLE entregas ADD COLUMN numero TEXT")
+            _conn.execute("ALTER TABLE entregas ADD COLUMN cc TEXT")
+            _conn.execute("UPDATE entregas SET numero=printf('P-%06d', id) WHERE numero IS NULL")
         cols = [r[1] for r in _conn.execute("PRAGMA table_info(unidades)").fetchall()]
         if "categoria" not in cols:      # unidad que rige solo para una categoría (Traumatología B, Ginecología recertificados…)
             _conn.execute("ALTER TABLE unidades ADD COLUMN categoria TEXT DEFAULT ''")

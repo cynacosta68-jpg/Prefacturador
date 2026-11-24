@@ -100,6 +100,7 @@ function descargarBlob(blob, nombre) {
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
 }
+const norm = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const qs = o => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== "" && v != null)).toString();
 
 /* ───────────── sesión y navegación ───────────── */
@@ -157,20 +158,22 @@ async function iniciar() {
   if (S.me.debe_cambiar) cambiarClave(true);
 }
 
-const GLOBALES = { auditoria: "Auditoría", backups: "Copias de seguridad", archivo: "Archivo", usuarios: "Usuarios" };
+const GLOBALES = { financiadores: "Portal de Financiadores", auditoria: "Auditoría", backups: "Copias de seguridad", archivo: "Archivo", usuarios: "Usuarios" };
+// Las secciones de administración son solo para administradores; el Portal de Financiadores es para todos
+const globalesVisibles = () => Object.entries(GLOBALES).filter(([id]) => id === "financiadores" || (S.me && S.me.rol === "admin"));
 
 function abrir(os, sec) {
   S.os = os;
   pantalla("app");
   $("#quien2").textContent = S.me.usuario;
-  $("#osLateral").textContent = os ? NOMBRES[os] : "Administración";
+  $("#osLateral").textContent = os ? NOMBRES[os] : (sec === "financiadores" ? "Financiadores" : "Administración");
   $("#osActual").classList.toggle("oculto", !os);
   ir(sec);
 }
 
 async function contadores() {
   if (!S.os) {
-    $("#nav").innerHTML = Object.entries(GLOBALES).map(([id, n]) => `<button data-sec="${id}" class="${id === S.sec ? "activo" : ""}">${n}</button>`).join("");
+    $("#nav").innerHTML = globalesVisibles().map(([id, n]) => `<button data-sec="${id}" class="${id === S.sec ? "activo" : ""}">${n}</button>`).join("");
   } else {
     let r = {};
     try { r = await api("/api/resumen?os=" + S.os); } catch (e) { return; }
@@ -181,7 +184,7 @@ async function contadores() {
 }
 
 function ir(sec) {
-  if (S.os ? !SECCIONES.some(s => s[0] === sec) : !GLOBALES[sec]) sec = S.os ? "padron" : "auditoria";
+  if (S.os ? !SECCIONES.some(s => s[0] === sec) : !globalesVisibles().some(([id]) => id === sec)) sec = S.os ? "padron" : "financiadores";
   S.sec = sec;
   S.sel = new Set(); S.pagina = 0; S.filtros = {};
   clearInterval(S.pollBot);
@@ -749,6 +752,7 @@ const COLS_LINEA = [
   { k: "especialidad", t: "Especialidad" }, { k: "categoria", t: "Cat." },
   { k: "valor_unit", t: "Valor unit.", num: true, f: f => f.valor_unit ? pesos(f.valor_unit) : `<span class="et mal">sin valor</span>` },
   { k: "total", t: "Total", num: true, f: f => pesos(f.total) },
+  { k: "coseguro", t: "Coseguro", num: true, f: f => f.coseguro ? pesos(f.coseguro) : `<span class="suave">—</span>` },
   { k: "valor_archivo", t: "Total archivo", num: true, f: f => f.valor_archivo ? pesos(f.valor_archivo * (f.cantidad || 1)) : `<span class="suave">—</span>` },
   { k: "valor_grilla", t: "Valor grilla", num: true, f: f => {
     if (!f.valor_grilla) return `<span class="suave">sin grilla</span>`;
@@ -761,7 +765,7 @@ const COLS_LINEA = [
 function editarLinea(f, recargar) {
   const campos = [["nro_transaccion", "N° transacción"], ["fecha_prestacion", "Fecha prestación (dd/mm/aaaa)"], ["periodo", "Período (MMAAAA)"],
     ["afiliado_numero", "N° afiliado"], ["afiliado_nombre", "Afiliado"], ["cod_practica", "Código de prestación"],
-    ["descripcion", "Descripción"], ["cantidad", "Cantidad"], ["valor_unit", "Valor unitario"],
+    ["descripcion", "Descripción"], ["cantidad", "Cantidad"], ["valor_unit", "Valor unitario"], ["coseguro", "Coseguro"],
     ["cuenta", "Cuenta"], ["matricula", "Matrícula"], ["profesional", "Profesional"], ["cuit", "CUIT"],
     ["especialidad", "Especialidad"], ["categoria", "Categoría"], ["observacion", "Observación"]];
   modal(`<h3>Modificar línea · transacción ${esc(f.nro_transaccion)}</h3>
@@ -1269,5 +1273,167 @@ VISTAS.usuarios = async () => {
   $("#uNuevo").onclick = () => form(null);
   $$("[data-ed]").forEach(b => b.onclick = () => form(filas.find(f => f.id === +b.dataset.ed)));
 };
+
+/* ───────────── Portal de Financiadores ───────────── */
+
+VISTAS.financiadores = async () => {
+  $("#subtitulo").textContent = "Datos de contacto y de presentación de cada obra social. Elegí la obra social y usá «Presentar».";
+  const d = await api("/api/financiadores");
+  const F = S.filtros;
+  const etiqueta = { portal: "Portal", mail: "Mail", "portal y mail": "Portal y mail", manual: "Entrega manual" };
+  const b = norm(F.q || "");
+  const filas = d.filas.filter(f => (!F.mod || f.modalidad === F.mod || (F.mod === "-" && !f.modalidad))
+    && (!b || norm(Object.values(f).filter(v => typeof v === "string").join(" ")).includes(b)));
+  const host = u => { try { return new URL(u).host.replace(/^www\./, ""); } catch (e) { return u; } };
+  const cols = [
+    { k: "nombre", t: "Obra social", f: f => `<b>${esc(f.nombre)}</b>` },
+    { k: "modalidad", t: "Presentación", f: f => f.modalidad ? `<span class="et ${f.modalidad === "manual" ? "" : "ok"}">${esc(etiqueta[f.modalidad])}</span>` : `<span class="et avi">sin definir</span>` },
+    { k: "plazo", t: "Plazo máx." }, { k: "ref_principal", t: "Referente principal" }, { k: "ref_suplente", t: "Referente suplente" },
+    { k: "ref_os", t: "Referente OS", f: f => esc([f.ref_os, f.ref_os2].filter(Boolean).join(" · ")) },
+    { k: "mails", t: "Mails" }, { k: "telefono", t: "Teléfono" },
+    { k: "url_portal", t: "Portal", f: f => f.url_portal ? `<a class="enlace" href="${esc(f.url_portal)}" target="_blank" rel="noopener noreferrer">${esc(host(f.url_portal))}</a>` : "" },
+    { k: "usuario", t: "Usuario" },
+    { k: "tiene_clave", t: "Contraseña", f: f => f.tiene_clave ? `<span class="suave">●●●●●● cargada</span>` : (f.url_portal ? `<span class="et avi">falta</span>` : "") },
+    { k: "ultima", t: "Última presentación", f: f => f.ultima ? `${esc(f.ultima.numero || "")} · ${esc(f.ultima.periodo)} · ${esc(f.ultima.factura)} · ${pesos(f.ultima.importe)}<br><span class="suave">${esc(f.ultima.fecha)} · por ${esc(f.ultima.via)}</span>` : `<span class="suave">—</span>` },
+  ];
+  $("#vista").innerHTML = `
+    <div class="barra">
+      <label>Buscar<input id="q" value="${esc(F.q || "")}" placeholder="Obra social, referente, mail…"></label>
+      <label>Presentación<select id="fMod"><option value="">Todas</option>${d.modalidades.map(m => `<option value="${m}" ${F.mod === m ? "selected" : ""}>${etiqueta[m]}</option>`).join("")}<option value="-" ${F.mod === "-" ? "selected" : ""}>Sin definir</option></select></label>
+      <span class="suave">${miles(filas.length)} de ${miles(d.filas.length)} obras sociales</span><span class="sep"></span>
+      <button class="btn" id="fNuevo">+ Agregar</button>
+      <label class="btn">Importar Excel<input type="file" id="fArch" accept=".xlsx" class="oculto"></label>
+      <a class="btn" href="/api/financiadores/exportar">Exportar Excel</a>
+      <button class="btn" id="fHist">Presentaciones realizadas</button>
+    </div>
+    <p class="suave sinMargen">En los mails de presentación van siempre en copia: <b>${esc(d.cc || "nadie")}</b> <button class="btn mini" id="fCc">Cambiar</button></p>
+    ${tabla(cols, filas, { vacio: d.filas.length ? "Ninguna obra social coincide con la búsqueda." : "Todavía no hay financiadores. Importá el Excel «Portal de OS» o agregalos a mano.",
+      acciones: f => `<button class="btn mini primario" data-presentar="${f.id}">Presentar</button><button class="btn mini" data-ed="${f.id}">Editar</button>` })}`;
+  const recargar = () => VISTAS.financiadores().catch(fallo);
+  $("#q").oninput = conDemora(e => { F.q = e.target.value; VISTAS.financiadores().then(() => { const i = $("#q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }).catch(fallo); });
+  $("#fMod").onchange = e => { F.mod = e.target.value; recargar(); };
+  $("#fArch").onchange = async e => {
+    const a = e.target.files[0]; if (!a) return;
+    try { const r = await subir("/api/financiadores/importar", {}, a); toast(`${miles(r.nuevos)} obra(s) social(es) agregadas · ${miles(r.actualizados)} actualizadas · ${miles(r.con_clave)} con contraseña de portal`); recargar(); } catch (err) { fallo(err); }
+  };
+  const copiar = async (texto, que) => { try { await navigator.clipboard.writeText(texto); toast(que + " copiado"); } catch (e) { toast("No se pudo copiar: seleccioná el texto y copialo a mano", true); } };
+
+  // ── copias por defecto de los mails de presentación
+  $("#fCc").onclick = () => {
+    modal(`<h3>Copias de los mails de presentación</h3><form id="fcc">
+      <label>Direcciones que van siempre en copia (separadas por ;)<input name="cc" value="${esc(d.cc || "")}"></label>
+      <p class="suave">Se proponen en cada presentación por mail; ahí mismo se pueden cambiar para ese envío.</p>
+      <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Guardar</button></div></form>`);
+    $("#fcc").onsubmit = async e => {
+      e.preventDefault();
+      try { await api("/api/financiadores/copias", { method: "PUT", json: { cc: new FormData(e.target).get("cc") } }); cerrarModal(); toast("Copias guardadas"); recargar(); } catch (err) { fallo(err); }
+    };
+  };
+
+  // ── alta y edición
+  const form = f => {
+    const campos = [["nombre", "Obra social"], ["plazo", "Plazo máximo de presentación"], ["ref_principal", "Referente principal"], ["ref_suplente", "Referente suplente"],
+      ["ref_os", "Referente en la OS"], ["ref_os2", "Otro referente en la OS"], ["mails", "Mails (separados por ;)"], ["telefono", "Teléfono"],
+      ["url_portal", "Dirección del portal (https://…)"], ["usuario", "Usuario del portal"]];
+    modal(`<h3>${f ? "Editar " + esc(f.nombre) : "Agregar obra social"}</h3><form id="ff" autocomplete="off"><div class="rejilla">
+      ${campos.map(([k, t]) => `<label>${t}<input name="${k}" value="${esc(f ? f[k] || "" : "")}" autocomplete="off"></label>`).join("")}
+      <label>Contraseña del portal ${f && f.tiene_clave ? "(vacío = no cambiarla)" : ""}<input name="clave" type="password" autocomplete="new-password"></label>
+      <label>Cómo se presenta<select name="modalidad"><option value="">Sin definir</option>${d.modalidades.map(m => `<option value="${m}" ${f && f.modalidad === m ? "selected" : ""}>${etiqueta[m]}</option>`).join("")}</select></label>
+      <label>Notas<input name="notas" value="${esc(f ? f.notas || "" : "")}"></label></div>
+      <p class="suave">La contraseña del portal se guarda cifrada y no se muestra en el listado.</p>
+      <div class="pie">${f ? `<button type="button" class="btn peligro" id="fBorrar">Eliminar</button>` : ""}<span class="sep"></span>
+      <button type="button" class="btn" data-cerrar>Cancelar</button><button class="btn primario">Guardar</button></div></form>`);
+    $("#ff").onsubmit = async e => {
+      e.preventDefault();
+      const datos = Object.fromEntries(new FormData(e.target));
+      try { await api(f ? "/api/financiadores/" + f.id : "/api/financiadores", { method: f ? "PUT" : "POST", json: datos }); cerrarModal(); toast("Guardado"); recargar(); } catch (err) { fallo(err); }
+    };
+    if (f) $("#fBorrar").onclick = async () => {
+      if (!await confirmar(`¿Eliminar ${f.nombre} del Portal de Financiadores? Las presentaciones ya registradas se conservan.`, "Eliminar", "peligro")) return;
+      try { await api("/api/financiadores/" + f.id, { method: "DELETE" }); cerrarModal(); recargar(); } catch (err) { fallo(err); }
+    };
+  };
+  $("#fNuevo").onclick = () => form(null);
+  $$("[data-ed]").forEach(x => x.onclick = () => form(d.filas.find(f => f.id === +x.dataset.ed)));
+
+  // ── resultado de la presentación: portal con credenciales, o mail armado
+  const mostrarPortal = r => {
+    modal(`<h3>Presentación N° ${esc(r.numero)} · por portal · ${esc(r.nombre)}</h3>
+      <p>Quedó registrada la presentación <b>${esc(r.numero)}</b> del período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}.</p>
+      <dl class="detalleFila">
+        <div><dt>Portal</dt><dd><a class="enlace" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.url)}</a></dd></div>
+        <div><dt>Usuario</dt><dd><code id="pUsu">${esc(r.usuario || "—")}</code> ${r.usuario ? `<button class="btn mini" id="cUsu">Copiar</button>` : ""}</dd></div>
+        <div><dt>Contraseña</dt><dd>${r.clave ? `<code id="pCla">●●●●●●●●</code> <button class="btn mini" id="vCla">Mostrar</button> <button class="btn mini" id="cCla">Copiar</button>` : `<span class="et avi">no está cargada</span>`}</dd></div>
+        ${r.link ? `<div><dt>Documentación</dt><dd><a class="enlace" href="${esc(r.link)}" target="_blank" rel="noopener noreferrer">${esc(r.link)}</a> <button class="btn mini" id="cLink">Copiar</button></dd></div>` : ""}
+      </dl>
+      <p class="suave">Al abrir el portal se copia el usuario; pegalo y después copiá la contraseña con su botón. Por seguridad del navegador, la aplicación no puede escribir dentro de la página de la obra social.</p>
+      <div class="pie"><button class="btn" data-cerrar>Cerrar</button><button class="btn primario" id="pAbrir">Abrir el portal</button></div>`);
+    if ($("#cUsu")) $("#cUsu").onclick = () => copiar(r.usuario, "Usuario");
+    if ($("#cCla")) { $("#cCla").onclick = () => copiar(r.clave, "Contraseña"); $("#vCla").onclick = () => { const c = $("#pCla"), ver = c.textContent.startsWith("●"); c.textContent = ver ? r.clave : "●●●●●●●●"; $("#vCla").textContent = ver ? "Ocultar" : "Mostrar"; }; }
+    if ($("#cLink")) $("#cLink").onclick = () => copiar(r.link, "Link");
+    $("#pAbrir").onclick = async () => { if (r.usuario) await copiar(r.usuario, "Usuario"); window.open(r.url, "_blank", "noopener"); };
+  };
+  const mostrarMail = r => {
+    modal(`<h3>Presentación N° ${esc(r.numero)} · por mail · ${esc(r.nombre)}</h3>
+      <p>Quedó registrada la presentación <b>${esc(r.numero)}</b> del período ${esc(r.periodo)}, factura ${esc(r.factura)} por ${pesos(r.importe)}.</p>
+      <dl class="detalleFila">
+        <div><dt>Para</dt><dd>${esc(r.para)}</dd></div>
+        <div><dt>Con copia</dt><dd>${esc(r.cc || "—")}</dd></div>
+        <div><dt>Asunto</dt><dd>${esc(r.asunto)}</dd></div>
+      </dl>
+      <pre class="log" id="mCuerpo">${esc(r.cuerpo)}</pre>
+      <p class="suave">«Abrir en el correo» crea el mensaje con destinatarios, asunto y texto ya completos. Los adjuntos (la factura y el detalle de prestaciones) hay que agregarlos en el correo: un enlace no puede adjuntar archivos.</p>
+      <div class="pie"><button class="btn" data-cerrar>Cerrar</button><button class="btn" id="mCopiar">Copiar el texto</button><a class="btn primario" href="${esc(r.mailto)}">Abrir en el correo</a></div>`);
+    $("#mCopiar").onclick = () => copiar(`Para: ${r.para}\nCC: ${r.cc}\nAsunto: ${r.asunto}\n\n${r.cuerpo}`, "Texto del mail");
+  };
+
+  // ── presentar
+  const presentar = f => {
+    const porPortal = f.url_portal && (f.modalidad === "portal" || f.modalidad === "portal y mail" || !f.modalidad);
+    const porMail = f.mails && (f.modalidad === "mail" || f.modalidad === "portal y mail" || !f.modalidad || f.modalidad === "manual");
+    modal(`<h3>Presentar · ${esc(f.nombre)}</h3>
+      <dl class="detalleFila">
+        <div><dt>Presentación</dt><dd>${f.modalidad ? esc(etiqueta[f.modalidad]) : "sin definir"}</dd></div>
+        <div><dt>Plazo máximo</dt><dd>${esc(f.plazo || "—")}</dd></div>
+        <div><dt>Referente</dt><dd>${esc(f.ref_principal || "—")}${f.ref_suplente ? " · suplente: " + esc(f.ref_suplente) : ""}</dd></div>
+      </dl>
+      <form id="fpz"><div class="rejilla">
+        <label>Período (MMAAAA)<input name="periodo" value="${esc(F.per || "")}" maxlength="6" required pattern="(0[1-9]|1[0-2])[0-9]{4}" placeholder="102026"></label>
+        <label>N° de factura<input name="factura" required placeholder="0088-00000369"></label>
+        <label>Importe total de la factura<input name="importe" required inputmode="decimal" placeholder="745567993,39"></label>
+        <label>Link de la documentación<input name="link" type="url" placeholder="https://…"></label>
+        ${porMail ? `<label>Con copia a (mail)<input name="cc" value="${esc(d.cc || "")}"></label>` : ""}</div>
+        ${!porPortal && !porMail ? `<div class="aviso mal sinMargen">Esta obra social no tiene portal ni mails cargados. Completalos con «Editar».</div>` : ""}
+        <div class="pie"><button type="button" class="btn" data-cerrar>Cancelar</button>
+          ${porMail ? `<button class="btn ${porPortal ? "" : "primario"}" data-via="mail">Presentar por mail</button>` : ""}
+          ${porPortal ? `<button class="btn primario" data-via="portal">Presentar por portal</button>` : ""}</div></form>`);
+    $("#fpz").onsubmit = async e => {
+      e.preventDefault();
+      const datos = Object.fromEntries(new FormData(e.target));
+      datos.via = (e.submitter && e.submitter.dataset.via) || (porPortal ? "portal" : "mail");
+      F.per = datos.periodo;
+      try {
+        const r = await api(`/api/financiadores/${f.id}/presentar`, { json: datos });
+        await VISTAS.financiadores();
+        (r.via === "portal" ? mostrarPortal : mostrarMail)(r);
+      } catch (err) { fallo(err); }
+    };
+  };
+  $$("[data-presentar]").forEach(x => x.onclick = () => presentar(d.filas.find(f => f.id === +x.dataset.presentar)));
+
+  // ── historial
+  $("#fHist").onclick = async () => {
+    try {
+      const h = await api("/api/financiadores/entregas");
+      modal(`<h3>Presentaciones realizadas</h3>
+        ${tabla([{ k: "numero", t: "N° presentación", f: x => `<b>${esc(x.numero || "")}</b>` }, { k: "fecha", t: "Fecha" }, { k: "nombre", t: "Obra social" }, { k: "periodo", t: "Período" }, { k: "factura", t: "Factura" },
+          { k: "importe", t: "Importe", num: true, f: x => pesos(x.importe) }, { k: "via", t: "Por" },
+          { k: "link", t: "Documentación", f: x => x.link ? `<a class="enlace" href="${esc(x.link)}" target="_blank" rel="noopener noreferrer">abrir</a>` : "" },
+          { k: "usuario", t: "Usuario" }], h.filas, { vacio: "Todavía no se registró ninguna presentación." })}
+        <div class="pie"><button class="btn primario" data-cerrar>Cerrar</button></div>`);
+    } catch (err) { fallo(err); }
+  };
+};
+
 
 iniciar();

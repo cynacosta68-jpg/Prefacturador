@@ -545,6 +545,16 @@ def evweb_df(os_key, busqueda="", desde="", hasta="", prof="", nro=""):
 
 # ───────────────────────── archivo validado → líneas ─────────────────────────
 
+def col_coseguro(df):
+    """Columna del archivo de la obra social que trae el coseguro (Coseguro, Copago, Co-pago, Cargo afiliado…)."""
+    for c in df.columns:
+        n = norm(c).replace("-", "").replace(" ", "")
+        if n.startswith(("coseguro", "copago", "importecoseguro", "importecopago", "valorcoseguro", "valorcopago")) \
+                or n in ("cargoafiliado", "acargodelafiliado", "acargoafiliado", "cosegurototal"):
+            return c
+    return None
+
+
 def _parse_galeno(df):
     c_id = col(df, "Id Transacción", "Id Transaccion")
     if not c_id:
@@ -575,6 +585,7 @@ def _parse_sancor(df):
     c_id = col(df, "NRO ORDEN")
     if not c_id:
         raise ValueError("El archivo de SANCOR no tiene la columna 'NRO ORDEN'.")
+    c_cos = col_coseguro(df)
     out = []
     for _, r in df.iterrows():
         if not limpiar_id(r[c_id]):
@@ -590,6 +601,7 @@ def _parse_sancor(df):
             cant=cant, importe=num(r.get(col(df, "IMPORTE")), 0),
             prof_nombre=txt(r.get(col(df, "DESC. PRESTADOR EFECTOR"))),
             prof_mp=limpiar_id(r.get(col(df, "MAT. PRESTADOR EFECTOR"))),
+            **({"copago": num(r[c_cos])} if c_cos else {}),
         ))
     return out, 0
 
@@ -598,6 +610,7 @@ def _parse_avalian(df):
     c_id = col(df, "tranxml_id")
     if not c_id:
         raise ValueError("El archivo de AVALIAN no tiene la columna 'tranxml_id'.")
+    c_cos = col_coseguro(df)
     out = []
     for _, r in df.iterrows():
         if not limpiar_id(r[c_id]):
@@ -613,6 +626,7 @@ def _parse_avalian(df):
             importe=num(r.get("valor_total"), 0),
             prof_nombre=txt(r.get("nombre_realizador")),
             prof_mp=limpiar_id(r.get("matri_realizador")),
+            **({"copago": num(r[c_cos])} if c_cos else {}),
         ))
     return out, 0
 
@@ -783,13 +797,14 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False, modo="evw
             prof["nombre"] if prof else (e["profesional"] if e else f["prof_nombre"]),
             prof["cuit"] if prof else "", esp, cat, vu, round(vu * f["cant"], 2), origen, cruce,
             " · ".join(obs), ahora, v_arch, v or None, iva, os_codigo,
-            prof["resp_fiscal"] if prof else "", f.get("condicion_iva", ""), cod_val, desc_prop))
+            prof["resp_fiscal"] if prof else "", f.get("condicion_iva", ""), cod_val, desc_prop,
+            round(f.get("copago") or 0, 2) or None))
     with db.tx() as c:
         c.executemany(
             "INSERT INTO lineas(os,periodo,estado,nro_transaccion,fecha_prestacion,afiliado_numero,afiliado_nombre,"
             "cod_practica,descripcion,cantidad,cuenta,matricula,profesional,cuit,especialidad,categoria,valor_unit,"
             "total,origen_valor,cruce,observacion,creado,valor_archivo,valor_grilla,iva,os_codigo,resp_fiscal,cond_afiliado,"
-            "cod_propuesto,desc_propuesta) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "cod_propuesto,desc_propuesta,coseguro) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             nuevas)
         c.execute("INSERT INTO importaciones(os,hash,nombre,periodo,fecha,filas) VALUES (?,?,?,?,?,?)",
                   (os_key, huella, nombre, periodo, ahora, len(nuevas)))
@@ -800,7 +815,7 @@ def prefacturar(os_key, periodo, contenido, nombre, solo_nuevas=False, modo="evw
 
 CAMPOS_EDITABLES = ["nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
                     "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad",
-                    "categoria", "valor_unit", "observacion", "periodo"]
+                    "categoria", "valor_unit", "observacion", "periodo", "coseguro"]
 
 
 def editar_linea(lid, cambios, autocompletar=False, ctx=None):
@@ -815,7 +830,7 @@ def editar_linea(lid, cambios, autocompletar=False, ctx=None):
     nuevo = dict(lin)
     for k in CAMPOS_EDITABLES:
         if k in cambios and cambios[k] is not None:
-            nuevo[k] = num(cambios[k]) if k in ("cantidad", "valor_unit") else str(cambios[k]).strip()
+            nuevo[k] = num(cambios[k]) if k in ("cantidad", "valor_unit", "coseguro") else str(cambios[k]).strip()
     if "periodo" in cambios:
         nuevo["periodo"] = validar_periodo(nuevo["periodo"])
     incremento = num(cambios.get("incremento")) if cambios.get("incremento") not in (None, "") else 0
@@ -1055,7 +1070,7 @@ def _fila_template(l, fpres):
     return [l["cuenta"], str(l["afiliado_numero"] or ""), (l["afiliado_nombre"] or "").upper(), fp, cod,
             int(cant) if cant == int(cant) else cant, 0, None, round(l["total"] or 0, 2), 0, 0, 0, 0, 0, None,
             int(l.get("iva") or 0),
-            None, None, fpres, None, None, str(l["nro_transaccion"] or "") or None]
+            None, None, fpres, round(l.get("coseguro") or 0, 2), None, str(l["nro_transaccion"] or "") or None]
 
 
 def generar_template(os_key, ids):

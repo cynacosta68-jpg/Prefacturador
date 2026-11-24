@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import arca, archivo, db, logic, seguridad, smg
+from . import arca, archivo, db, financiadores, logic, seguridad, smg
 from .seguridad import auditar
 from .evweb_bot import ejecutar_extractor, generar_rangos_9_dias
 
@@ -994,7 +994,7 @@ def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce:
     cols = ["periodo", "nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
             "cod_propuesto", "codigos", "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
             "valor_unit", "total", "valor_archivo", "valor_grilla", "total_archivo", "total_grilla", "origen_valor",
-            "cruce", "observacion", "resp_fiscal", "cond_afiliado", "iva"]
+            "cruce", "observacion", "resp_fiscal", "cond_afiliado", "iva", "coseguro"]
     for f in filas:
         f["codigos"] = "Difieren cód." if logic.codigos_difieren(f) else "Coinciden códigos"
         f["total_archivo"] = round(f["valor_archivo"] * (f["cantidad"] or 1), 2) if f["valor_archivo"] else None
@@ -1198,6 +1198,90 @@ async def presentacion(os: str, periodo: str = Form(...), factura: str = Form(""
                                            "X-Sin-Cruce-N": str(info.get("sin_cruce", "")),
                                            "X-Sin-Cruce": quote(", ".join(info.get("sin_cruce_ej", []))),
                                            "X-Excedidos": quote(", ".join(info.get("coseguro_excedido", [])))})
+
+
+# ───────────────────────── portal de financiadores ─────────────────────────
+
+@app.get("/api/financiadores")
+def fin_listar(u=Auth):
+    return {"filas": financiadores.listar(), "modalidades": financiadores.MODALIDADES, "cc": financiadores.copias()}
+
+
+@app.put("/api/financiadores/copias")
+async def fin_copias(request: Request, u=Auth):
+    """Direcciones que van siempre en copia en los mails de presentación."""
+    antes = financiadores.copias()
+    cc = financiadores.guardar_copias((await request.json()).get("cc", ""))
+    A(u, "financiadores.copias", None, "ajuste", None, antes=antes, despues=cc)
+    return {"cc": cc}
+
+
+@app.post("/api/financiadores/importar")
+async def fin_importar(archivo: UploadFile = File(...), u=Auth):
+    datos, nombre = await _leer(archivo)
+    r = financiadores.importar(datos)
+    A(u, "financiadores.importar", None, "financiador", None, archivo=nombre, **r)      # sin credenciales en el registro
+    return r
+
+
+@app.post("/api/financiadores")
+async def fin_alta(request: Request, u=Auth):
+    f = financiadores.guardar(await request.json())
+    A(u, "financiadores.alta", None, "financiador", f["id"], **{k: f[k] for k in financiadores.CAMPOS}, con_clave=bool(f["clave"]))
+    return financiadores.publico(f)
+
+
+@app.put("/api/financiadores/{fid}")
+async def fin_editar(fid: int, request: Request, u=Auth):
+    antes = db.q1("SELECT * FROM financiadores WHERE id=?", (fid,))
+    if not antes:
+        raise HTTPException(404, "Financiador inexistente.")
+    f = financiadores.guardar(await request.json(), fid)
+    cambios = {k: {"antes": antes[k], "despues": f[k]} for k in financiadores.CAMPOS if (antes[k] or "") != (f[k] or "")}
+    if antes["clave"] != f["clave"]:
+        cambios["clave"] = "modificada"          # nunca se registra el valor
+    A(u, "financiadores.modificar", None, "financiador", fid, financiador=f["nombre"], cambios=cambios)
+    return financiadores.publico(f)
+
+
+@app.delete("/api/financiadores/{fid}")
+def fin_baja(fid: int, u=Auth):
+    antes = db.q1("SELECT * FROM financiadores WHERE id=?", (fid,))
+    if not antes:
+        raise HTTPException(404, "Financiador inexistente.")
+    with db.tx() as c:
+        c.execute("DELETE FROM financiadores WHERE id=?", (fid,))
+    A(u, "financiadores.baja", None, "financiador", fid, **{k: antes[k] for k in financiadores.CAMPOS})
+    return {"ok": True}
+
+
+@app.post("/api/financiadores/{fid}/presentar")
+async def fin_presentar(fid: int, request: Request, u=Auth):
+    """Registra la presentación y devuelve el portal con sus credenciales o el mail armado."""
+    r = financiadores.presentar(fid, await request.json(), u["usuario"])
+    A(u, "financiadores.presentar", None, "financiador", fid, financiador=r["nombre"], via=r["via"], periodo=r["periodo"],
+      factura=r["factura"], importe=r["importe"], link=r["link"], numero=r["numero"],
+      **({"credenciales_mostradas": True} if r["via"] == "portal" else {"para": r["para"], "cc": r["cc"]}))
+    return r
+
+
+@app.get("/api/financiadores/entregas")
+def fin_entregas(fid: int = 0, u=Auth):
+    sql, par = "SELECT * FROM entregas", []
+    if fid:
+        sql, par = sql + " WHERE financiador_id=?", [fid]
+    return {"filas": db.q(sql + " ORDER BY id DESC LIMIT 500", par)}
+
+
+@app.get("/api/financiadores/exportar")
+def fin_exportar(u=Auth):
+    """Listado de financiadores y de presentaciones. No incluye las contraseñas de los portales."""
+    cols = {"nombre": "Obra Social", "ref_principal": "Referente principal", "ref_suplente": "Referente suplente",
+            "ref_os": "Referente OS", "ref_os2": "Referente OS 2", "plazo": "Plazo Max Vto", "mails": "Mails",
+            "telefono": "Telefono", "url_portal": "URL Portal", "usuario": "Usuario", "modalidad": "Modalidad", "notas": "Notas"}
+    df = pd.DataFrame([{t: f[k] for k, t in cols.items()} for f in financiadores.listar()], columns=list(cols.values()))
+    A(u, "financiadores.exportar", None, "financiador", None, filas=len(df))
+    return _descarga(logic.df_a_xlsx(df, "Financiadores"), "Portal_de_financiadores.xlsx")
 
 
 # ───────────────────────── interfaz ─────────────────────────
