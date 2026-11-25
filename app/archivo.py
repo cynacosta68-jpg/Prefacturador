@@ -12,7 +12,7 @@ import pandas as pd
 from . import db, logic, seguridad
 
 ARCHIVO_DIR = os.path.join(db.DATA_DIR, "archivo")
-DIA_ARCHIVO = int(os.environ.get("ARCHIVE_DAY", "25"))
+DIA_ARCHIVO = int(os.environ.get("ARCHIVE_DAY", "27"))
 _RE = re.compile(r"^Archivo_(AVALIAN|SANCOR|GALENO|SWISS)_hasta_\d{6}_\d{8}_\d{6}\.xlsx$")
 
 
