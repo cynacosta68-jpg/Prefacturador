@@ -896,9 +896,15 @@ _LISTA_SQL = ("COALESCE(cuenta,'')<>'' AND COALESCE(profesional,'')<>'' AND COAL
               "AND COALESCE(valor_unit,0)>0")        # misma regla que logic.validar_para_procesar
 
 
-def _lineas_sql(os_key, estado, periodo="", cruce="", prof="", nro="", rf="", afil="", cods="", valor=""):
+def _lineas_sql(os_key, estado, periodo="", cruce="", prof="", nro="", rf="", afil="", cods="", valor="", cat="", esp=""):
     """Condición SQL (desde «FROM lineas …») y parámetros de los filtros de líneas."""
     sql, par = " FROM lineas WHERE os=? AND estado=?", [os_key, estado]
+    if cat:         # categoría del profesional («-» = sin dato)
+        sql += " AND COALESCE(categoria,'')=?"
+        par.append("" if cat == "-" else cat)
+    if esp:         # especialidad del profesional
+        sql += " AND COALESCE(especialidad,'')=?"
+        par.append("" if esp == "-" else esp)
     if valor:       # «sin» / «con» valor unitario
         sql += " AND COALESCE(valor_unit,0)" + ("<=0" if valor == "sin" else ">0")
     if cods:        # «difieren» / «coinciden»: código propuesto contra el del archivo
@@ -924,8 +930,8 @@ def _lineas_sql(os_key, estado, periodo="", cruce="", prof="", nro="", rf="", af
     return sql, par
 
 
-def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", afil="", cods="", valor=""):
-    sql, par = _lineas_sql(os_key, estado, periodo, cruce, prof, nro, rf, afil, cods, valor)
+def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", afil="", cods="", valor="", cat="", esp=""):
+    sql, par = _lineas_sql(os_key, estado, periodo, cruce, prof, nro, rf, afil, cods, valor, cat, esp)
     filas = db.q("SELECT *" + sql + " ORDER BY id", par)
     if q:
         b = logic.norm(q)
@@ -937,20 +943,21 @@ def _lineas(os_key, estado, periodo="", q="", cruce="", prof="", nro="", rf="", 
 
 @app.get("/api/lineas")
 def lineas(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "", nro: str = "",
-           rf: str = "", afil: str = "", cods: str = "", valor: str = "", limite: int = 500, desde: int = 0,
+           rf: str = "", afil: str = "", cods: str = "", valor: str = "", cat: str = "", esp: str = "",
+           limite: int = 500, desde: int = 0,
            solo_ids: int = 0, u=Auth):
     os_key = _os(os)
     if estado not in ("prefact", "facturacion", "template"):
         raise HTTPException(400, "Estado inválido.")
     if q.strip():       # el texto libre ignora tildes y mayúsculas: se filtra en memoria
-        filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro, rf, afil, cods, valor)
+        filas = _lineas(os_key, estado, periodo, q, cruce, prof, nro, rf, afil, cods, valor, cat, esp)
         if solo_ids:
             return {"ids": [f["id"] for f in filas]}
         total, importe = len(filas), round(sum(f["total"] or 0 for f in filas), 2)
         listas = sum(1 for f in filas if not logic.validar_para_procesar(f))
         tramo = filas[desde:desde + limite] if limite > 0 else filas
     else:               # sin texto libre: cuenta, suma y pagina la base de datos (rápido con muchas filas)
-        sql, par = _lineas_sql(os_key, estado, periodo, cruce, prof, nro, rf, afil, cods, valor)
+        sql, par = _lineas_sql(os_key, estado, periodo, cruce, prof, nro, rf, afil, cods, valor, cat, esp)
         if solo_ids:    # para «Seleccionar todas las filtradas»
             return {"ids": [r["id"] for r in db.q("SELECT id" + sql + " ORDER BY id", par)]}
         t = db.q1(f"SELECT COUNT(*) n, COALESCE(SUM(total),0) imp, COALESCE(SUM(CASE WHEN {_LISTA_SQL} THEN 1 ELSE 0 END),0) ok" + sql, par)
@@ -967,6 +974,7 @@ def lineas(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = ""
             "periodos": sorted(pers, key=lambda p: (p[2:], p[:2]), reverse=True), "filas": tramo,
             "profesionales": logic.opciones_profesional("lineas", os_key, "AND estado=?", (estado,)),
             "cond_prof": cond("resp_fiscal"), "cond_afil": cond("cond_afiliado"),
+            "categorias": cond("categoria"), "especialidades": cond("especialidad"),
             "difieren": db.scalar("SELECT COUNT(*) FROM lineas WHERE os=? AND estado=? AND COALESCE(cod_propuesto,'')<>'' "
                                   "AND LTRIM(cod_propuesto,'0')<>LTRIM(cod_practica,'0')", (os_key, estado))}
 
@@ -989,8 +997,9 @@ async def lineas_resumen(request: Request, u=Auth):
 
 @app.get("/api/lineas/exportar")
 def lineas_exportar(os: str, estado: str, periodo: str = "", q: str = "", cruce: str = "", prof: str = "",
-                    nro: str = "", rf: str = "", afil: str = "", cods: str = "", valor: str = "", u=Auth):
-    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro, rf, afil, cods, valor)
+                    nro: str = "", rf: str = "", afil: str = "", cods: str = "", valor: str = "", cat: str = "",
+                    esp: str = "", u=Auth):
+    filas = _lineas(_os(os), estado, periodo, q, cruce, prof, nro, rf, afil, cods, valor, cat, esp)
     cols = ["periodo", "nro_transaccion", "fecha_prestacion", "afiliado_numero", "afiliado_nombre", "cod_practica",
             "cod_propuesto", "codigos", "descripcion", "cantidad", "cuenta", "matricula", "profesional", "cuit", "especialidad", "categoria",
             "valor_unit", "total", "valor_archivo", "valor_grilla", "total_archivo", "total_grilla", "origen_valor",

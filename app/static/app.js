@@ -864,7 +864,7 @@ function procesarConFuente(ids, recargar) {
 
 async function vistaLineas(estado, cfg) {
   const F = S.filtros;
-  const par = { os: S.os, estado, periodo: F.periodo || "", q: F.q || "", cruce: F.cruce || "", prof: F.prof || "", nro: F.nro || "", rf: F.rf || "", afil: F.afil || "", cods: F.cods || "", valor: F.valor || "" };
+  const par = { os: S.os, estado, periodo: F.periodo || "", q: F.q || "", cruce: F.cruce || "", prof: F.prof || "", nro: F.nro || "", rf: F.rf || "", afil: F.afil || "", cods: F.cods || "", valor: F.valor || "", cat: F.cat || "", esp: F.esp || "" };
   const conIva = estado !== "template";
   const opcCond = (lista, sel) => lista.map(c => `<option value="${esc(c)}" ${c === sel ? "selected" : ""}>${c === "-" ? "Sin dato" : esc(c)}</option>`).join("");
   const d = await api("/api/lineas?" + qs({ ...par, limite: S.limite, desde: S.pagina * S.limite }));
@@ -886,6 +886,8 @@ async function vistaLineas(estado, cfg) {
       ${estado === "prefact" ? `<label>Cruce<select id="fCru"><option value="">Todos</option>${["OK", ...(S.os === "SWISS" ? ["GRILLA"] : []), "MANUAL", "SIN EVWEB", "SIN PADRON"].map(c => `<option ${c === F.cruce ? "selected" : ""}>${c}</option>`).join("")}</select></label>` : ""}
       ${d.cond_prof.some(c => c !== "-") ? `<label>Condición del profesional<select id="fRf"><option value="">Todas</option>${opcCond(d.cond_prof, F.rf)}</select></label>` : ""}
       ${d.cond_afil.some(c => c !== "-") ? `<label>Condición del afiliado<select id="fAfil"><option value="">Todas</option>${opcCond(d.cond_afil, F.afil)}</select></label>` : ""}
+      <label>Cat.<select id="fCat"><option value="">Todas</option>${opcCond(d.categorias, F.cat)}</select></label>
+      <label>Especialidad<select id="fEspL"><option value="">Todas</option>${opcCond(d.especialidades, F.esp)}</select></label>
       <label>Valor unitario<select id="fValor"><option value="">Todos</option><option value="sin" ${F.valor === "sin" ? "selected" : ""}>Sin valor (${miles(d.sin_valor)})</option><option value="con" ${F.valor === "con" ? "selected" : ""}>Con valor</option></select></label>
       ${d.difieren || F.cods ? `<label>Códigos<select id="fCods"><option value="">Todos</option><option value="difieren" ${F.cods === "difieren" ? "selected" : ""}>Difieren cód. (${miles(d.difieren)})</option><option value="coinciden" ${F.cods === "coinciden" ? "selected" : ""}>Coinciden códigos</option></select></label>` : ""}
       ${filtrosBusqueda(F, d.profesionales)}
@@ -895,12 +897,14 @@ async function vistaLineas(estado, cfg) {
       ${ordenGuardado("lineas").length ? `<button class="btn" id="colsReset">Restablecer columnas</button>` : ""}
     </div>
     <p class="suave sinMargen">Para cambiar el orden de las columnas, arrastrá el encabezado de una columna hasta el lugar donde la querés. El orden queda guardado en este navegador.</p>
-    ${tabla(colsLineas, d.filas, { sel: true, mover: true, vacio: (F.prof || F.nro || F.q || F.periodo || F.cruce || F.rf || F.afil) ? "Ninguna línea coincide con los filtros." : cfg.vacio, acciones: cfg.acciones })}`;
+    ${tabla(colsLineas, d.filas, { sel: true, mover: true, vacio: (F.prof || F.nro || F.q || F.periodo || F.cruce || F.rf || F.afil || F.cat || F.esp || F.valor || F.cods) ? "Ninguna línea coincide con los filtros." : cfg.vacio, acciones: cfg.acciones })}`;
   enlazarPaginador(recargar);
   enlazarColumnas("lineas", colsLineas, recargar);
   if ($("#fRf")) $("#fRf").onchange = e => { F.rf = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fAfil")) $("#fAfil").onchange = e => { F.afil = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   if ($("#fCods")) $("#fCods").onchange = e => { F.cods = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
+  $("#fCat").onchange = e => { F.cat = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
+  $("#fEspL").onchange = e => { F.esp = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   $("#fValor").onchange = e => { F.valor = e.target.value; S.pagina = 0; S.sel.clear(); recargar(); };
   // Selección masiva: todas las líneas que cumplen los filtros, no solo las de la página
   if ($("#selFiltradas")) $("#selFiltradas").onclick = async () => {
